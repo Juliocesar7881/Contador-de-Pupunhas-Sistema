@@ -3,6 +3,7 @@ import type { RoboflowAnalysis, RoboflowPrediction } from './types';
 const ROBOFLOW_API_URL =
   'https://serverless.roboflow.com/loops-luchini/workflows/detect-count-and-visualize';
 const ROBOFLOW_API_KEY = 'TDezmok4BGqtc1sKEXAk';
+const ROBOFLOW_TIMEOUT_MS = 45000;
 export const AI_CONFIDENCE_THRESHOLD = 0.15;
 
 type RoboflowWorkflowResponse = {
@@ -93,24 +94,54 @@ function extractCount(output: RoboflowWorkflowOutput, predictionCount: number) {
   return predictionCount;
 }
 
-export async function analyzePalletImage(base64Image: string): Promise<RoboflowAnalysis> {
-  const response = await fetch(ROBOFLOW_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      api_key: ROBOFLOW_API_KEY,
-      inputs: {
-        image: {
-          type: 'base64',
-          value: stripBase64Prefix(base64Image),
-        },
-      },
-    }),
-  });
+async function parseRoboflowResponse(response: Response) {
+  const text = await response.text();
 
-  const data = (await response.json()) as RoboflowWorkflowResponse;
+  if (!text.trim()) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(text) as RoboflowWorkflowResponse;
+  } catch {
+    throw new Error('A IA retornou uma resposta invalida.');
+  }
+}
+
+export async function analyzePalletImage(base64Image: string): Promise<RoboflowAnalysis> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), ROBOFLOW_TIMEOUT_MS);
+
+  let response: Response;
+
+  try {
+    response = await fetch(ROBOFLOW_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        api_key: ROBOFLOW_API_KEY,
+        inputs: {
+          image: {
+            type: 'base64',
+            value: stripBase64Prefix(base64Image),
+          },
+        },
+      }),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error('A IA demorou demais para responder. Tente reprocessar este palete.');
+    }
+
+    throw new Error('Nao foi possivel conectar com a IA. Confira a internet e tente novamente.');
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  const data = await parseRoboflowResponse(response);
 
   if (!response.ok) {
     throw new Error(data.message || 'Nao foi possivel contar este palete.');

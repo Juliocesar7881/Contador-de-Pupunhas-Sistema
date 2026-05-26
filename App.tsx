@@ -11,6 +11,7 @@ import {
   Alert,
   BackHandler,
   Image as RNImage,
+  InteractionManager,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -42,6 +43,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
   type ComponentType,
   type ReactNode,
@@ -49,18 +51,21 @@ import {
 
 import {
   MAX_PALLETS_PER_LOAD,
+  clearPendingPickerContext,
   createLoad,
   createProcessingPallet,
   deleteLoad,
   deletePallet,
   getLoad,
   getPallet,
+  getPendingPickerContext,
   initDatabase,
   listLoads,
   listPallets,
   markPalletError,
   resetPalletForProcessing,
   savePalletAnalysis,
+  savePendingPickerContext,
   updateLoad,
   updatePalletManualCount,
   updatePalletName,
@@ -68,7 +73,7 @@ import {
 import { analyzePalletImage, imageDataUri } from './src/roboflow';
 import { shareLoadPdf } from './src/pdf';
 import { colors, radius, spacing } from './src/theme';
-import type { Load, LoadSummary, Pallet } from './src/types';
+import type { Load, LoadSummary, Pallet, PendingPickerContext } from './src/types';
 
 type Screen =
   | { name: 'home' }
@@ -84,7 +89,7 @@ type LoadModalState =
 
 type PalletNameModalState =
   | { mode: 'closed' }
-  | { mode: 'create'; source: ImageSource; defaultName: string }
+  | { mode: 'create'; source: ImageSource; loadId: number; defaultName: string }
   | { mode: 'edit'; pallet: Pallet };
 
 type IconComponent = ComponentType<{
@@ -161,6 +166,14 @@ function delay(ms: number) {
   });
 }
 
+function waitForPickerLaunchWindow() {
+  return new Promise<void>((resolve) => {
+    InteractionManager.runAfterInteractions(() => {
+      setTimeout(resolve, Platform.OS === 'android' ? 500 : 0);
+    });
+  });
+}
+
 function errorMessage(error: unknown) {
   const message = error instanceof Error ? error.message : 'Algo deu errado.';
 
@@ -169,7 +182,7 @@ function errorMessage(error: unknown) {
     message.includes('ImageLibraryContract') ||
     message.includes('launchImageLibraryAsync')
   ) {
-    return 'A galeria nao abriu corretamente. Feche e abra o app novamente; se continuar, instale a versao mais recente.';
+    return 'A galeria nao abriu corretamente. Tente novamente; se continuar, feche e abra o app.';
   }
 
   return message;
@@ -187,6 +200,12 @@ async function saveCameraCaptureToGallery(uri: string | undefined) {
   }
 
   await MediaLibrary.Asset.create(uri);
+}
+
+function isImagePickerErrorResult(
+  result: ImagePicker.ImagePickerResult | ImagePicker.ImagePickerErrorResult,
+): result is ImagePicker.ImagePickerErrorResult {
+  return !('canceled' in result);
 }
 
 function PrimaryButton({
@@ -801,10 +820,12 @@ function LoadFormModal({
   state,
   onClose,
   onSave,
+  saving = false,
 }: {
   state: LoadModalState;
   onClose: () => void;
-  onSave: (name: string, note: string | null) => void;
+  onSave: (name: string, note: string | null) => void | Promise<void>;
+  saving?: boolean;
 }) {
   const isVisible = state.mode !== 'closed';
   const [name, setName] = useState(defaultLoadName());
@@ -819,6 +840,10 @@ function LoadFormModal({
   }, [isVisible, state]);
 
   const save = () => {
+    if (saving) {
+      return;
+    }
+
     Keyboard.dismiss();
 
     if (!name.trim()) {
@@ -846,7 +871,7 @@ function LoadFormModal({
             <Text style={styles.modalTitle}>
               {state.mode === 'edit' ? 'Editar carga' : 'Nova carga'}
             </Text>
-            <IconButton icon={X} label="Fechar" onPress={onClose} />
+            <IconButton disabled={saving} icon={X} label="Fechar" onPress={onClose} />
           </View>
 
           <ScrollView
@@ -857,6 +882,7 @@ function LoadFormModal({
             <Text style={styles.inputLabel}>Nome</Text>
             <TextInput
               blurOnSubmit
+              editable={!saving}
               onChangeText={setName}
               onSubmitEditing={Keyboard.dismiss}
               placeholder="Carga"
@@ -869,6 +895,7 @@ function LoadFormModal({
             <Text style={styles.inputLabel}>Observação</Text>
             <TextInput
               blurOnSubmit
+              editable={!saving}
               multiline
               numberOfLines={5}
               onChangeText={setNote}
@@ -883,7 +910,13 @@ function LoadFormModal({
             />
           </ScrollView>
 
-          <PrimaryButton icon={Save} label="Salvar carga" onPress={save} />
+          <PrimaryButton
+            disabled={saving}
+            icon={Save}
+            label="Salvar carga"
+            loading={saving}
+            onPress={save}
+          />
         </View>
       </KeyboardAvoidingView>
     </Modal>
@@ -894,10 +927,12 @@ function PalletNameModal({
   state,
   onClose,
   onSave,
+  saving = false,
 }: {
   state: PalletNameModalState;
   onClose: () => void;
-  onSave: (name: string) => void;
+  onSave: (name: string) => void | Promise<void>;
+  saving?: boolean;
 }) {
   const isVisible = state.mode !== 'closed';
   const fallbackName =
@@ -916,6 +951,10 @@ function PalletNameModal({
   }, [fallbackName, isVisible]);
 
   const save = () => {
+    if (saving) {
+      return;
+    }
+
     Keyboard.dismiss();
     onSave(name.trim() || fallbackName);
   };
@@ -937,7 +976,7 @@ function PalletNameModal({
             <Text style={styles.modalTitle}>
               {state.mode === 'edit' ? 'Editar palete' : 'Nome do palete'}
             </Text>
-            <IconButton icon={X} label="Fechar" onPress={onClose} />
+            <IconButton disabled={saving} icon={X} label="Fechar" onPress={onClose} />
           </View>
 
           <ScrollView
@@ -949,6 +988,7 @@ function PalletNameModal({
             <TextInput
               autoFocus
               blurOnSubmit
+              editable={!saving}
               onChangeText={setName}
               onSubmitEditing={save}
               placeholder="Palete"
@@ -960,8 +1000,10 @@ function PalletNameModal({
           </ScrollView>
 
           <PrimaryButton
+            disabled={saving}
             icon={Save}
             label={state.mode === 'edit' ? 'Salvar nome' : 'Continuar'}
+            loading={saving}
             onPress={save}
           />
         </View>
@@ -1028,6 +1070,28 @@ export default function App() {
   });
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
   const [imageViewerUri, setImageViewerUri] = useState<string | null>(null);
+  const [loadSubmitting, setLoadSubmitting] = useState(false);
+  const [palletNameSubmitting, setPalletNameSubmitting] = useState(false);
+  const loadSubmittingRef = useRef(false);
+  const palletNameSubmittingRef = useRef(false);
+  const pickerFlowLockedRef = useRef(false);
+  const retryInFlightRef = useRef(false);
+
+  const releasePickerFlow = useCallback(() => {
+    pickerFlowLockedRef.current = false;
+  }, []);
+
+  const closePalletNameModal = useCallback(() => {
+    setPalletNameModal((state) => {
+      if (state.mode === 'create') {
+        releasePickerFlow();
+      }
+
+      return { mode: 'closed' };
+    });
+    palletNameSubmittingRef.current = false;
+    setPalletNameSubmitting(false);
+  }, [releasePickerFlow]);
 
   const navigateTo = useCallback(
     (nextScreen: Screen) => {
@@ -1066,7 +1130,7 @@ export default function App() {
     }
 
     if (palletNameModal.mode !== 'closed') {
-      setPalletNameModal({ mode: 'closed' });
+      closePalletNameModal();
       return true;
     }
 
@@ -1083,7 +1147,14 @@ export default function App() {
     }
 
     return false;
-  }, [imageViewerUri, loadModal.mode, palletNameModal.mode, screen, screenHistory]);
+  }, [
+    closePalletNameModal,
+    imageViewerUri,
+    loadModal.mode,
+    palletNameModal.mode,
+    screen,
+    screenHistory,
+  ]);
 
   const refreshHome = useCallback(async () => {
     const rows = await listLoads();
@@ -1147,6 +1218,13 @@ export default function App() {
   }, [goBack]);
 
   const handleSaveLoad = async (name: string, note: string | null) => {
+    if (loadSubmittingRef.current) {
+      return;
+    }
+
+    loadSubmittingRef.current = true;
+    setLoadSubmitting(true);
+
     try {
       if (loadModal.mode === 'edit') {
         await updateLoad(loadModal.load.id, name, note);
@@ -1160,6 +1238,9 @@ export default function App() {
       navigateTo({ name: 'load', loadId });
     } catch (error) {
       Alert.alert('Erro ao salvar', errorMessage(error));
+    } finally {
+      loadSubmittingRef.current = false;
+      setLoadSubmitting(false);
     }
   };
 
@@ -1190,115 +1271,208 @@ export default function App() {
       return;
     }
 
+    if (busyMessage || pickerFlowLockedRef.current || palletNameModal.mode !== 'closed') {
+      return;
+    }
+
+    pickerFlowLockedRef.current = true;
+
     setPalletNameModal({
       mode: 'create',
       source,
+      loadId: screen.loadId,
       defaultName: nextPalletName(pallets),
     });
   };
 
-  const pickImage = async (source: ImageSource, palletName: string) => {
-    if (screen.name !== 'load') {
+  const processPickedAsset = useCallback(
+    async (context: PendingPickerContext, asset: ImagePicker.ImagePickerAsset) => {
+      let palletId: number | null = null;
+      let gallerySaveError: string | null = null;
+
+      try {
+        if (!asset.base64) {
+          throw new Error('A foto nao retornou em base64.');
+        }
+
+        if (context.source === 'camera') {
+          setBusyMessage('Salvando na galeria');
+          try {
+            await saveCameraCaptureToGallery(asset.uri);
+          } catch (error) {
+            gallerySaveError = errorMessage(error);
+          }
+        }
+
+        setBusyMessage('Salvando palete');
+        palletId = await createProcessingPallet(context.loadId, asset.base64, context.palletName);
+        await clearPendingPickerContext();
+        await refreshLoad(context.loadId);
+
+        setBusyMessage('Contando com IA');
+        const analysis = await analyzePalletImage(asset.base64);
+        await savePalletAnalysis(palletId, context.loadId, analysis);
+        navigateTo({ name: 'pallet', loadId: context.loadId, palletId });
+
+        if (gallerySaveError) {
+          Alert.alert(
+            'Foto nao salva na galeria',
+            `O palete foi contado normalmente, mas a foto da camera nao foi salva na galeria. ${gallerySaveError}`,
+          );
+        }
+      } catch (error) {
+        const message = errorMessage(error);
+
+        if (palletId) {
+          await markPalletError(palletId, context.loadId, message);
+          navigateTo({ name: 'pallet', loadId: context.loadId, palletId });
+        } else {
+          Alert.alert('Nao foi possivel adicionar', message);
+        }
+      } finally {
+        await clearPendingPickerContext().catch(() => undefined);
+        setBusyMessage(null);
+        releasePickerFlow();
+        await refreshCurrentScreen().catch(() => undefined);
+      }
+    },
+    [navigateTo, refreshCurrentScreen, refreshLoad, releasePickerFlow],
+  );
+
+  const pickImageSafely = useCallback(
+    async (context: PendingPickerContext) => {
+      let handedOffToProcessor = false;
+
+      try {
+        setBusyMessage(context.source === 'camera' ? 'Abrindo camera' : 'Abrindo galeria');
+
+        if (context.source === 'camera') {
+          const permission = await ImagePicker.requestCameraPermissionsAsync();
+          if (!permission.granted) {
+            throw new Error('Permita o uso da camera para fotografar o palete.');
+          }
+        }
+
+        await savePendingPickerContext(context);
+        await waitForPickerLaunchWindow();
+
+        const result =
+          context.source === 'camera'
+            ? await ImagePicker.launchCameraAsync({
+                allowsEditing: false,
+                base64: true,
+                mediaTypes: ['images'],
+                quality: 0.72,
+              })
+            : await ImagePicker.launchImageLibraryAsync({
+                allowsEditing: false,
+                base64: true,
+                mediaTypes: ['images'],
+                quality: 0.72,
+              });
+
+        if (result.canceled) {
+          await clearPendingPickerContext();
+          return;
+        }
+
+        const asset = result.assets[0];
+        if (!asset) {
+          throw new Error('Nenhuma imagem foi selecionada.');
+        }
+
+        handedOffToProcessor = true;
+        await processPickedAsset(context, asset);
+      } catch (error) {
+        await clearPendingPickerContext().catch(() => undefined);
+        Alert.alert('Nao foi possivel adicionar', errorMessage(error));
+      } finally {
+        if (!handedOffToProcessor) {
+          setBusyMessage(null);
+          releasePickerFlow();
+          await refreshCurrentScreen().catch(() => undefined);
+        }
+      }
+    },
+    [processPickedAsset, refreshCurrentScreen, releasePickerFlow],
+  );
+
+  const recoverPendingPickerResult = useCallback(async () => {
+    if (Platform.OS !== 'android') {
       return;
     }
 
-    const loadId = screen.loadId;
-    let palletId: number | null = null;
-    let gallerySaveError: string | null = null;
-
-    try {
-      setBusyMessage(source === 'camera' ? 'Abrindo câmera' : 'Abrindo galeria');
-
-      if (source === 'camera') {
-        const permission = await ImagePicker.requestCameraPermissionsAsync();
-        if (!permission.granted) {
-          throw new Error('Permita o uso da camera para fotografar o palete.');
-        }
-      } else {
-        const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-        if (!permission.granted) {
-          throw new Error('Permita acesso as fotos para escolher uma imagem.');
-        }
-      }
-
-      const result =
-        source === 'camera'
-          ? await ImagePicker.launchCameraAsync({
-              allowsEditing: false,
-              base64: true,
-              mediaTypes: ['images'],
-              quality: 0.72,
-            })
-          : await ImagePicker.launchImageLibraryAsync({
-              allowsEditing: false,
-              base64: true,
-              mediaTypes: ['images'],
-              quality: 0.72,
-            });
-
-      if (result.canceled) {
-        return;
-      }
-
-      const asset = result.assets[0];
-      if (!asset.base64) {
-        throw new Error('A foto nao retornou em base64.');
-      }
-
-      if (source === 'camera') {
-        setBusyMessage('Salvando na galeria');
-        try {
-          await saveCameraCaptureToGallery(asset.uri);
-        } catch (error) {
-          gallerySaveError = errorMessage(error);
-        }
-      }
-
-      setBusyMessage('Salvando palete');
-      palletId = await createProcessingPallet(loadId, asset.base64, palletName);
-      await refreshLoad(loadId);
-
-      setBusyMessage('Contando com IA');
-      const analysis = await analyzePalletImage(asset.base64);
-      await savePalletAnalysis(palletId, loadId, analysis);
-      navigateTo({ name: 'pallet', loadId, palletId });
-
-      if (gallerySaveError) {
-        Alert.alert(
-          'Foto nao salva na galeria',
-          `O palete foi contado normalmente, mas a foto da camera nao foi salva na galeria. ${gallerySaveError}`,
-        );
-      }
-    } catch (error) {
-      const message = errorMessage(error);
-
-      if (palletId) {
-        await markPalletError(palletId, loadId, message);
-        navigateTo({ name: 'pallet', loadId, palletId });
-      } else {
-        Alert.alert('Nao foi possivel adicionar', message);
-      }
-    } finally {
-      setBusyMessage(null);
-      await refreshCurrentScreen().catch(() => undefined);
+    const context = await getPendingPickerContext();
+    if (!context) {
+      return;
     }
-  };
+
+    const result = await ImagePicker.getPendingResultAsync();
+
+    if (!result) {
+      await clearPendingPickerContext();
+      return;
+    }
+
+    if (isImagePickerErrorResult(result)) {
+      await clearPendingPickerContext();
+      Alert.alert('Nao foi possivel adicionar', result.message);
+      return;
+    }
+
+    if (result.canceled) {
+      await clearPendingPickerContext();
+      return;
+    }
+
+    const asset = result.assets[0];
+    if (!asset) {
+      await clearPendingPickerContext();
+      Alert.alert('Nao foi possivel adicionar', 'Nenhuma imagem foi selecionada.');
+      return;
+    }
+
+    pickerFlowLockedRef.current = true;
+    await processPickedAsset(context, asset);
+  }, [processPickedAsset]);
+
+  useEffect(() => {
+    if (!ready) {
+      return;
+    }
+
+    recoverPendingPickerResult().catch((error) => {
+      Alert.alert('Nao foi possivel recuperar a imagem', errorMessage(error));
+    });
+  }, [ready, recoverPendingPickerResult]);
 
   const handleSavePalletName = async (name: string) => {
     if (palletNameModal.mode === 'closed') {
       return;
     }
 
-    const state = palletNameModal;
-    setPalletNameModal({ mode: 'closed' });
-
-    if (state.mode === 'create') {
-      await delay(250);
-      await pickImage(state.source, name);
+    if (palletNameSubmittingRef.current) {
       return;
     }
 
+    palletNameSubmittingRef.current = true;
+    setPalletNameSubmitting(true);
+
+    const state = palletNameModal;
+    setPalletNameModal({ mode: 'closed' });
+
     try {
+      if (state.mode === 'create') {
+        palletNameSubmittingRef.current = false;
+        setPalletNameSubmitting(false);
+        await pickImageSafely({
+          loadId: state.loadId,
+          source: state.source,
+          palletName: name,
+        });
+        return;
+      }
+
       await updatePalletName(state.pallet.id, name);
       await refreshPallet(state.pallet.load_id, state.pallet.id);
       if (screen.name === 'load') {
@@ -1306,11 +1480,18 @@ export default function App() {
       }
     } catch (error) {
       Alert.alert('Erro ao renomear', errorMessage(error));
+    } finally {
+      palletNameSubmittingRef.current = false;
+      setPalletNameSubmitting(false);
     }
   };
 
   const handleExportPdf = async () => {
     if (!currentLoad) {
+      return;
+    }
+
+    if (busyMessage) {
       return;
     }
 
@@ -1362,6 +1543,12 @@ export default function App() {
       return;
     }
 
+    if (retryInFlightRef.current || busyMessage) {
+      return;
+    }
+
+    retryInFlightRef.current = true;
+
     try {
       setBusyMessage('Reprocessando IA');
       await resetPalletForProcessing(currentPallet.id);
@@ -1375,6 +1562,7 @@ export default function App() {
       await refreshPallet(currentPallet.load_id, currentPallet.id);
       Alert.alert('Erro ao reprocessar', message);
     } finally {
+      retryInFlightRef.current = false;
       setBusyMessage(null);
     }
   };
@@ -1462,11 +1650,13 @@ export default function App() {
         <LoadFormModal
           onClose={() => setLoadModal({ mode: 'closed' })}
           onSave={handleSaveLoad}
+          saving={loadSubmitting}
           state={loadModal}
         />
         <PalletNameModal
-          onClose={() => setPalletNameModal({ mode: 'closed' })}
+          onClose={closePalletNameModal}
           onSave={handleSavePalletName}
+          saving={palletNameSubmitting}
           state={palletNameModal}
         />
         <ImageViewerModal

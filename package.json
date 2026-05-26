@@ -1,6 +1,6 @@
 {
   "name": "contador-pupunha",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "main": "index.ts",
   "dependencies": {
     "expo": "~56.0.4",

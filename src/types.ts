@@ -46,3 +46,9 @@ export type RoboflowAnalysis = {
   outputImageBase64: string | null;
   predictions: RoboflowPrediction[];
 };
+
+export type PendingPickerContext = {
+  loadId: number;
+  source: 'camera' | 'gallery';
+  palletName: string;
+};

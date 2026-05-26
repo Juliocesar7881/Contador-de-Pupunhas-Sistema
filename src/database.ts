@@ -1,8 +1,15 @@
 import * as SQLite from 'expo-sqlite';
 
-import type { Load, LoadSummary, Pallet, RoboflowAnalysis } from './types';
+import type {
+  Load,
+  LoadSummary,
+  Pallet,
+  PendingPickerContext,
+  RoboflowAnalysis,
+} from './types';
 
 export const MAX_PALLETS_PER_LOAD = 12;
+const PENDING_PICKER_CONTEXT_KEY = 'pending_picker_context';
 
 const dbPromise = SQLite.openDatabaseAsync('contador-pupunha.db');
 
@@ -53,6 +60,12 @@ export async function initDatabase() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_pallets_load_id ON pallets(load_id);
+
+    CREATE TABLE IF NOT EXISTS app_meta (
+      key TEXT PRIMARY KEY NOT NULL,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   const palletColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(pallets)');
@@ -65,6 +78,68 @@ export async function initDatabase() {
   await db.runAsync(
     "UPDATE pallets SET name = 'Palete ' || pallet_number WHERE name IS NULL OR TRIM(name) = ''",
   );
+}
+
+function parsePendingPickerContext(value: string): PendingPickerContext | null {
+  try {
+    const parsed = JSON.parse(value) as Partial<PendingPickerContext>;
+
+    if (
+      typeof parsed.loadId === 'number' &&
+      (parsed.source === 'camera' || parsed.source === 'gallery') &&
+      typeof parsed.palletName === 'string' &&
+      parsed.palletName.trim()
+    ) {
+      return {
+        loadId: parsed.loadId,
+        source: parsed.source,
+        palletName: parsed.palletName,
+      };
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+export async function savePendingPickerContext(context: PendingPickerContext) {
+  const db = await getDatabase();
+
+  await db.runAsync(
+    `
+      INSERT OR REPLACE INTO app_meta (key, value, updated_at)
+      VALUES (?, ?, ?)
+    `,
+    PENDING_PICKER_CONTEXT_KEY,
+    JSON.stringify(context),
+    nowIso(),
+  );
+}
+
+export async function getPendingPickerContext() {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    PENDING_PICKER_CONTEXT_KEY,
+  );
+
+  if (!row) {
+    return null;
+  }
+
+  const context = parsePendingPickerContext(row.value);
+
+  if (!context) {
+    await clearPendingPickerContext();
+  }
+
+  return context;
+}
+
+export async function clearPendingPickerContext() {
+  const db = await getDatabase();
+  await db.runAsync('DELETE FROM app_meta WHERE key = ?', PENDING_PICKER_CONTEXT_KEY);
 }
 
 export async function listLoads() {
