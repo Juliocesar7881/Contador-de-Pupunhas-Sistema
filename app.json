@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "contador-pupunha",
+    "name": "Contador Pupunha",
     "slug": "contador-pupunha",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -10,8 +10,10 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.luchini.contadorpupunha",
+      "versionCode": 4,
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#DDEFE6",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -20,6 +22,34 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "expo-sqlite",
+      "expo-sharing",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Permita acessar suas fotos para contar os paletes de pupunha.",
+          "cameraPermission": "Permita usar a camera para fotografar os paletes de pupunha.",
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Permita acessar suas fotos para salvar as imagens dos paletes de pupunha.",
+          "savePhotosPermission": "Permita salvar as fotos dos paletes de pupunha na galeria.",
+          "granularPermissions": [
+            "photo"
+          ]
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "ce06e8d3-5b39-4ed6-b8cf-329c083a094f"
+      }
+    },
+    "owner": "loops7881"
   }
 }
