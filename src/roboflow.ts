@@ -104,7 +104,7 @@ async function parseRoboflowResponse(response: Response) {
   try {
     return JSON.parse(text) as RoboflowWorkflowResponse;
   } catch {
-    throw new Error('A IA retornou uma resposta invalida.');
+    throw new Error('A IA retornou uma resposta inválida.');
   }
 }
 
@@ -136,7 +136,7 @@ export async function analyzePalletImage(base64Image: string): Promise<RoboflowA
       throw new Error('A IA demorou demais para responder. Tente reprocessar este palete.');
     }
 
-    throw new Error('Nao foi possivel conectar com a IA. Confira a internet e tente novamente.');
+    throw new Error('Não foi possível conectar com a IA. Confira a internet e tente novamente.');
   } finally {
     clearTimeout(timeoutId);
   }
@@ -144,7 +144,7 @@ export async function analyzePalletImage(base64Image: string): Promise<RoboflowA
   const data = await parseRoboflowResponse(response);
 
   if (!response.ok) {
-    throw new Error(data.message || 'Nao foi possivel contar este palete.');
+    throw new Error(data.message || 'Não foi possível contar este palete.');
   }
 
   const output = data.outputs?.[0];

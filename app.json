@@ -2,7 +2,7 @@
   "expo": {
     "name": "Contador Pupunha",
     "slug": "contador-pupunha",
-    "version": "1.0.1",
+    "version": "1.0.5",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -11,7 +11,7 @@
     },
     "android": {
       "package": "com.luchini.contadorpupunha",
-      "versionCode": 5,
+      "versionCode": 9,
       "adaptiveIcon": {
         "backgroundColor": "#DDEFE6",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -27,10 +27,19 @@
       "expo-sqlite",
       "expo-sharing",
       [
+        "expo-camera",
+        {
+          "cameraPermission": "Permita usar a câmera para fotografar os paletes de pupunha.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": false
+        }
+      ],
+      [
         "expo-image-picker",
         {
           "photosPermission": "Permita acessar suas fotos para contar os paletes de pupunha.",
-          "cameraPermission": "Permita usar a camera para fotografar os paletes de pupunha.",
+          "cameraPermission": "Permita usar a câmera para fotografar os paletes de pupunha.",
           "microphonePermission": false
         }
       ],

@@ -1,6 +1,21 @@
 import { StatusBar } from 'expo-status-bar';
+import {
+  Camera as ExpoCamera,
+  CameraView,
+  type CameraCapturedPicture,
+} from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
+import {
+  Gesture,
+  GestureDetector,
+  GestureHandlerRootView,
+} from 'react-native-gesture-handler';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 import {
   initialWindowMetrics,
   SafeAreaProvider,
@@ -27,7 +42,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   BarChart3,
-  Camera,
+  Camera as CameraIcon,
   Check,
   FileText,
   Image as ImageIcon,
@@ -82,6 +97,11 @@ type Screen =
 
 type ImageSource = 'camera' | 'gallery';
 
+type PickedImageAsset = {
+  uri: string;
+  base64?: string | null;
+};
+
 type LoadModalState =
   | { mode: 'closed' }
   | { mode: 'create' }
@@ -89,7 +109,12 @@ type LoadModalState =
 
 type PalletNameModalState =
   | { mode: 'closed' }
-  | { mode: 'create'; source: ImageSource; loadId: number; defaultName: string }
+  | {
+      mode: 'create';
+      context: PendingPickerContext;
+      asset: PickedImageAsset;
+      defaultName: string;
+    }
   | { mode: 'edit'; pallet: Pallet };
 
 type IconComponent = ComponentType<{
@@ -182,7 +207,7 @@ function errorMessage(error: unknown) {
     message.includes('ImageLibraryContract') ||
     message.includes('launchImageLibraryAsync')
   ) {
-    return 'A galeria nao abriu corretamente. Tente novamente; se continuar, feche e abra o app.';
+    return 'A galeria não abriu corretamente. Tente novamente; se continuar, feche e abra o app.';
   }
 
   return message;
@@ -190,13 +215,13 @@ function errorMessage(error: unknown) {
 
 async function saveCameraCaptureToGallery(uri: string | undefined) {
   if (!uri) {
-    throw new Error('A camera nao retornou um arquivo para salvar na galeria.');
+    throw new Error('A câmera não retornou um arquivo para salvar na galeria.');
   }
 
   const permission = await MediaLibrary.requestPermissionsAsync(true, ['photo']);
 
   if (!permission.granted) {
-    throw new Error('Permita salvar fotos na galeria para guardar as imagens tiradas pela camera.');
+    throw new Error('Permita salvar fotos na galeria para guardar as imagens tiradas pela câmera.');
   }
 
   await MediaLibrary.Asset.create(uri);
@@ -394,10 +419,14 @@ function HomeScreen({
   loads,
   onCreate,
   onOpen,
+  onEdit,
+  onDelete,
 }: {
   loads: LoadSummary[];
   onCreate: () => void;
   onOpen: (loadId: number) => void;
+  onEdit: (load: LoadSummary) => void;
+  onDelete: (load: LoadSummary) => void;
 }) {
   return (
     <View style={styles.screenShell}>
@@ -423,28 +452,44 @@ function HomeScreen({
               const average = averagePerPallet(load.total_count, load.pallet_count);
 
               return (
-                <Pressable
-                  key={load.id}
-                  onPress={() => onOpen(load.id)}
-                  style={({ pressed }) => [
-                    styles.loadRow,
-                    styles.loadRowStack,
-                    { opacity: pressed ? 0.76 : 1 },
-                  ]}
-                >
+                <View key={load.id} style={[styles.loadRow, styles.loadRowStack]}>
                   <View style={styles.loadRowHeader}>
-                    <View style={styles.loadRowIcon}>
-                      <Truck color={colors.primary} size={20} strokeWidth={2.2} />
-                    </View>
-                    <View style={styles.loadRowBody}>
-                      <Text style={styles.loadRowTitle} numberOfLines={1}>
-                        {load.name}
-                      </Text>
-                      <Text style={styles.loadRowMeta}>{formatDateTime(load.created_at)}</Text>
+                    <Pressable
+                      onPress={() => onOpen(load.id)}
+                      style={({ pressed }) => [
+                        styles.loadOpenArea,
+                        { opacity: pressed ? 0.76 : 1 },
+                      ]}
+                    >
+                      <View style={styles.loadRowIcon}>
+                        <Truck color={colors.primary} size={20} strokeWidth={2.2} />
+                      </View>
+                      <View style={styles.loadRowBody}>
+                        <Text style={styles.loadRowTitle} numberOfLines={1}>
+                          {load.name}
+                        </Text>
+                        <Text style={styles.loadRowMeta}>{formatDateTime(load.created_at)}</Text>
+                      </View>
+                    </Pressable>
+
+                    <View style={styles.rowActions}>
+                      <IconButton icon={Pencil} label={`Editar ${load.name}`} onPress={() => onEdit(load)} />
+                      <IconButton
+                        icon={Trash2}
+                        label={`Excluir ${load.name}`}
+                        onPress={() => onDelete(load)}
+                        tone="danger"
+                      />
                     </View>
                   </View>
 
-                  <View style={styles.loadMetricsRow}>
+                  <Pressable
+                    onPress={() => onOpen(load.id)}
+                    style={({ pressed }) => [
+                      styles.loadMetricsRow,
+                      { opacity: pressed ? 0.76 : 1 },
+                    ]}
+                  >
                     <View style={styles.loadMetric}>
                       <Text style={styles.loadMetricValue}>{load.pallet_count}</Text>
                       <Text style={styles.loadMetricLabel}>paletes</Text>
@@ -457,8 +502,8 @@ function HomeScreen({
                       <Text style={styles.loadMetricValue}>{average}</Text>
                       <Text style={styles.loadMetricLabel}>média/palete</Text>
                     </View>
-                  </View>
-                </Pressable>
+                  </Pressable>
+                </View>
               );
             })
           )}
@@ -477,25 +522,24 @@ function LoadScreen({
   pallets,
   busyMessage,
   onBack,
-  onEdit,
-  onDelete,
   onExport,
   onAddCamera,
   onAddGallery,
   onOpenPallet,
+  onEditPalletName,
 }: {
   load: Load;
   pallets: Pallet[];
   busyMessage: string | null;
   onBack: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
   onExport: () => void;
   onAddCamera: () => void;
   onAddGallery: () => void;
   onOpenPallet: (palletId: number) => void;
+  onEditPalletName: (pallet: Pallet) => void;
 }) {
-  const canAdd = pallets.length < MAX_PALLETS_PER_LOAD && !busyMessage;
+  const limitReached = pallets.length >= MAX_PALLETS_PER_LOAD;
+  const canAdd = !limitReached && !busyMessage;
 
   return (
     <View style={styles.screenShell}>
@@ -523,37 +567,35 @@ function LoadScreen({
         </View>
 
         <View style={styles.statsGridTwo}>
-          <StatCard icon={Package} label="Paletes" value={`${pallets.length}/12`} />
+          <StatCard
+            icon={Package}
+            label="Paletes"
+            value={`${pallets.length}/${MAX_PALLETS_PER_LOAD}`}
+          />
           <StatCard icon={Check} label="Total" value={load.total_count} tone="accent" />
         </View>
 
-        <View style={styles.managementPanel}>
-          <Text style={styles.sectionTitle}>Gerenciar carga</Text>
-          <View style={styles.secondaryActionGrid}>
-            <View style={styles.secondaryActionItem}>
-              <PrimaryButton compact icon={Pencil} label="Editar" onPress={onEdit} variant="secondary" />
-            </View>
-            <View style={styles.secondaryActionItem}>
-              <PrimaryButton
-                compact
-                disabled={!pallets.length || Boolean(busyMessage)}
-                icon={FileText}
-                label="PDF"
-                loading={busyMessage === 'Gerando PDF'}
-                onPress={onExport}
-                variant="secondary"
-              />
-            </View>
-            <View style={styles.secondaryActionItem}>
-              <PrimaryButton compact icon={Trash2} label="Excluir" onPress={onDelete} variant="danger" />
-            </View>
-          </View>
-        </View>
+        <PrimaryButton
+          disabled={!pallets.length || Boolean(busyMessage)}
+          icon={FileText}
+          label="Gerar relatório PDF"
+          loading={busyMessage === 'Gerando PDF'}
+          onPress={onExport}
+          variant="secondary"
+        />
 
         {busyMessage ? (
           <View style={styles.busyBox}>
             <ActivityIndicator color={colors.primary} />
             <Text style={styles.busyText}>{busyMessage}</Text>
+          </View>
+        ) : null}
+
+        {limitReached ? (
+          <View style={styles.limitBox}>
+            <Text style={styles.limitText}>
+              Limite de {MAX_PALLETS_PER_LOAD} paletes atingido.
+            </Text>
           </View>
         ) : null}
 
@@ -570,30 +612,39 @@ function LoadScreen({
             />
           ) : (
             pallets.map((pallet) => (
-              <Pressable
-                key={pallet.id}
-                onPress={() => onOpenPallet(pallet.id)}
-                style={({ pressed }) => [styles.palletRow, { opacity: pressed ? 0.78 : 1 }]}
-              >
-                <RNImage
-                  accessibilityLabel={`Foto de ${palletDisplayName(pallet)}`}
-                  source={{
-                    uri: imageDataUri(pallet.ai_image_base64 ?? pallet.original_image_base64),
-                  }}
-                  style={styles.palletThumb}
+              <View key={pallet.id} style={styles.palletRow}>
+                <Pressable
+                  onPress={() => onOpenPallet(pallet.id)}
+                  style={({ pressed }) => [
+                    styles.palletRowOpenArea,
+                    { opacity: pressed ? 0.78 : 1 },
+                  ]}
+                >
+                  <RNImage
+                    accessibilityLabel={`Foto de ${palletDisplayName(pallet)}`}
+                    source={{
+                      uri: imageDataUri(pallet.ai_image_base64 ?? pallet.original_image_base64),
+                    }}
+                    style={styles.palletThumb}
+                  />
+                  <View style={styles.palletRowBody}>
+                    <Text style={styles.loadRowTitle} numberOfLines={1}>
+                      {palletDisplayName(pallet)}
+                    </Text>
+                    <Text style={styles.loadRowMeta}>
+                      IA {pallet.ai_count}
+                      {pallet.manual_count !== null ? ` · ajuste ${pallet.manual_count}` : ''}
+                    </Text>
+                    <StatusPill status={pallet.status} />
+                  </View>
+                  <Text style={styles.palletFinal}>{pallet.final_count}</Text>
+                </Pressable>
+                <IconButton
+                  icon={Pencil}
+                  label={`Editar ${palletDisplayName(pallet)}`}
+                  onPress={() => onEditPalletName(pallet)}
                 />
-                <View style={styles.palletRowBody}>
-                  <Text style={styles.loadRowTitle} numberOfLines={1}>
-                    {palletDisplayName(pallet)}
-                  </Text>
-                  <Text style={styles.loadRowMeta}>
-                    IA {pallet.ai_count}
-                    {pallet.manual_count !== null ? ` · ajuste ${pallet.manual_count}` : ''}
-                  </Text>
-                  <StatusPill status={pallet.status} />
-                </View>
-                <Text style={styles.palletFinal}>{pallet.final_count}</Text>
-              </Pressable>
+              </View>
             ))
           )}
         </View>
@@ -602,7 +653,7 @@ function LoadScreen({
       <BottomActionBar>
         <PrimaryButton
           disabled={!canAdd}
-          icon={Camera}
+          icon={CameraIcon}
           label="Câmera"
           loading={busyMessage === 'Abrindo câmera'}
           onPress={onAddCamera}
@@ -710,9 +761,12 @@ function PalletScreen({
             <Text style={styles.kicker} numberOfLines={1}>
               {load.name}
             </Text>
-            <Text style={styles.title} numberOfLines={2}>
-              {palletDisplayName(pallet)}
-            </Text>
+            <View style={styles.titleActionRow}>
+              <Text style={[styles.title, styles.titleActionText]} numberOfLines={2}>
+                {palletDisplayName(pallet)}
+              </Text>
+              <IconButton icon={Pencil} label="Editar nome do palete" onPress={onEditName} />
+            </View>
             <Text style={styles.loadRowMeta}>Palete {pallet.pallet_number}</Text>
           </View>
           <StatusPill status={pallet.status} />
@@ -767,16 +821,6 @@ function PalletScreen({
           <StatCard icon={Check} label="Final" value={pallet.final_count} tone="blue" />
         </View>
 
-        <View style={styles.managementPanel}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Nome do palete</Text>
-            <PrimaryButton compact icon={Pencil} label="Editar" onPress={onEditName} variant="secondary" />
-          </View>
-          <Text style={styles.namePreview} numberOfLines={2}>
-            {palletDisplayName(pallet)}
-          </Text>
-        </View>
-
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Ajuste manual</Text>
           <TextInput
@@ -802,7 +846,7 @@ function PalletScreen({
       </ScrollView>
 
       <BottomActionBar>
-        <PrimaryButton icon={Plus} label="PrÃ³ximo palete" onPress={goToNextPallet} />
+        <PrimaryButton icon={Plus} label="Próximo palete" onPress={goToNextPallet} />
         <PrimaryButton
           disabled={Boolean(busyMessage)}
           icon={RefreshCw}
@@ -1002,7 +1046,7 @@ function PalletNameModal({
           <PrimaryButton
             disabled={saving}
             icon={Save}
-            label={state.mode === 'edit' ? 'Salvar nome' : 'Continuar'}
+            label={state.mode === 'edit' ? 'Salvar nome' : 'Contar palete'}
             loading={saving}
             onPress={save}
           />
@@ -1020,6 +1064,96 @@ function ImageViewerModal({
   onClose: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  const scale = useSharedValue(1);
+  const savedScale = useSharedValue(1);
+  const translateX = useSharedValue(0);
+  const translateY = useSharedValue(0);
+  const savedTranslateX = useSharedValue(0);
+  const savedTranslateY = useSharedValue(0);
+
+  useEffect(() => {
+    scale.value = withTiming(1);
+    savedScale.value = 1;
+    translateX.value = withTiming(0);
+    translateY.value = withTiming(0);
+    savedTranslateX.value = 0;
+    savedTranslateY.value = 0;
+  }, [imageUri, savedScale, savedTranslateX, savedTranslateY, scale, translateX, translateY]);
+
+  const pinchGesture = Gesture.Pinch()
+    .onStart(() => {
+      savedScale.value = scale.value;
+    })
+    .onUpdate((event) => {
+      scale.value = Math.min(4, Math.max(1, savedScale.value * event.scale));
+    })
+    .onEnd(() => {
+      if (scale.value <= 1.01) {
+        scale.value = withTiming(1);
+        translateX.value = withTiming(0);
+        translateY.value = withTiming(0);
+        savedTranslateX.value = 0;
+        savedTranslateY.value = 0;
+      }
+
+      savedScale.value = scale.value;
+    });
+
+  const panGesture = Gesture.Pan()
+    .onStart(() => {
+      savedTranslateX.value = translateX.value;
+      savedTranslateY.value = translateY.value;
+    })
+    .onUpdate((event) => {
+      if (scale.value <= 1) {
+        translateX.value = 0;
+        translateY.value = 0;
+        return;
+      }
+
+      const dragLimit = 180 * scale.value;
+      translateX.value = Math.min(
+        dragLimit,
+        Math.max(-dragLimit, savedTranslateX.value + event.translationX),
+      );
+      translateY.value = Math.min(
+        dragLimit,
+        Math.max(-dragLimit, savedTranslateY.value + event.translationY),
+      );
+    })
+    .onEnd(() => {
+      savedTranslateX.value = translateX.value;
+      savedTranslateY.value = translateY.value;
+    });
+
+  const doubleTapGesture = Gesture.Tap()
+    .numberOfTaps(2)
+    .onEnd((_event, success) => {
+      if (!success) {
+        return;
+      }
+
+      if (scale.value > 1) {
+        scale.value = withTiming(1);
+        savedScale.value = 1;
+        translateX.value = withTiming(0);
+        translateY.value = withTiming(0);
+        savedTranslateX.value = 0;
+        savedTranslateY.value = 0;
+      } else {
+        scale.value = withTiming(2);
+        savedScale.value = 2;
+      }
+    });
+
+  const imageGesture = Gesture.Simultaneous(pinchGesture, panGesture, doubleTapGesture);
+  const animatedImageStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: translateX.value },
+      { translateY: translateY.value },
+      { scale: scale.value },
+    ],
+  }));
 
   return (
     <Modal animationType="fade" onRequestClose={onClose} transparent visible={Boolean(imageUri)}>
@@ -1032,13 +1166,15 @@ function ImageViewerModal({
         />
 
         {imageUri ? (
-          <View pointerEvents="none" style={styles.imageViewerContent}>
-            <RNImage
-              resizeMode="contain"
-              source={{ uri: imageUri }}
-              style={styles.imageViewerImage}
-            />
-          </View>
+          <GestureDetector gesture={imageGesture}>
+            <View collapsable={false} style={styles.imageViewerContent}>
+              <Animated.Image
+                resizeMode="contain"
+                source={{ uri: imageUri }}
+                style={[styles.imageViewerImage, animatedImageStyle]}
+              />
+            </View>
+          </GestureDetector>
         ) : null}
 
         <View
@@ -1050,6 +1186,161 @@ function ImageViewerModal({
           ]}
         >
           <IconButton icon={X} label="Fechar imagem" onPress={onClose} />
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function PalletCameraModal({
+  visible,
+  onClose,
+  onCapture,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onCapture: (picture: CameraCapturedPicture) => void | Promise<void>;
+}) {
+  const insets = useSafeAreaInsets();
+  const cameraRef = useRef<CameraView | null>(null);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [capturing, setCapturing] = useState(false);
+  const [cameraZoomPreset, setCameraZoomPreset] = useState<'2x' | '3x'>('2x');
+  const cameraZoomValue = cameraZoomPreset === '2x' ? 0.2 : 0.3;
+  const nextCameraZoomPreset = cameraZoomPreset === '2x' ? '3x' : '2x';
+
+  useEffect(() => {
+    if (visible) {
+      setCameraReady(false);
+      setCapturing(false);
+      setCameraZoomPreset('2x');
+    }
+  }, [visible]);
+
+  const close = () => {
+    if (!capturing) {
+      onClose();
+    }
+  };
+
+  const toggleCameraZoom = () => {
+    if (!capturing) {
+      setCameraZoomPreset((current) => (current === '2x' ? '3x' : '2x'));
+    }
+  };
+
+  const capture = async () => {
+    if (capturing || !cameraReady) {
+      return;
+    }
+
+    const camera = cameraRef.current;
+    if (!camera) {
+      Alert.alert('Câmera indisponível', 'A câmera ainda não está pronta.');
+      return;
+    }
+
+    setCapturing(true);
+
+    try {
+      const picture = await camera.takePictureAsync({
+        base64: true,
+        quality: 0.72,
+      });
+
+      if (!picture.base64) {
+        throw new Error('A foto não retornou em base64.');
+      }
+
+      await onCapture(picture);
+    } catch (error) {
+      setCapturing(false);
+      Alert.alert('Não foi possível fotografar', errorMessage(error));
+    }
+  };
+
+  return (
+    <Modal animationType="fade" onRequestClose={close} visible={visible}>
+      <View style={styles.cameraModal}>
+        <StatusBar style="light" />
+
+        {visible ? (
+          <CameraView
+            active={visible}
+            facing="back"
+            mode="picture"
+            onCameraReady={() => setCameraReady(true)}
+            onMountError={(event) => {
+              Alert.alert('Câmera indisponível', event.message);
+              onClose();
+            }}
+            ref={cameraRef}
+            style={styles.cameraPreview}
+            zoom={cameraZoomValue}
+          />
+        ) : null}
+
+        <View pointerEvents="none" style={styles.cameraOverlay}>
+          <View style={styles.cameraGuide} />
+        </View>
+
+        {!cameraReady ? (
+          <View pointerEvents="none" style={styles.cameraLoading}>
+            <ActivityIndicator color={colors.surface} size="large" />
+          </View>
+        ) : null}
+
+        <View
+          style={[
+            styles.cameraTopBar,
+            {
+              paddingTop: Math.max(insets.top, spacing.lg),
+            },
+          ]}
+        >
+          <Pressable
+            accessibilityLabel={`Zoom ${cameraZoomPreset}. Toque para mudar para ${nextCameraZoomPreset}.`}
+            accessibilityRole="button"
+            disabled={capturing}
+            onPress={toggleCameraZoom}
+            style={({ pressed }) => [
+              styles.cameraZoomToggle,
+              { opacity: pressed || capturing ? 0.72 : 1 },
+            ]}
+          >
+            <Text style={styles.cameraZoomText}>{cameraZoomPreset}</Text>
+          </Pressable>
+          <IconButton disabled={capturing} icon={X} label="Fechar câmera" onPress={close} />
+        </View>
+
+        <View
+          style={[
+            styles.cameraBottomBar,
+            {
+              paddingBottom: Math.max(insets.bottom, spacing.xl),
+            },
+          ]}
+        >
+          <Pressable
+            accessibilityLabel="Fotografar palete"
+            accessibilityRole="button"
+            disabled={!cameraReady || capturing}
+            onPress={capture}
+            style={({ pressed }) => [
+              styles.cameraCaptureButton,
+              {
+                opacity: pressed || !cameraReady || capturing ? 0.72 : 1,
+              },
+            ]}
+          >
+            <View style={styles.cameraCaptureButtonInner}>
+              {capturing ? (
+                <ActivityIndicator color={colors.primary} />
+              ) : (
+                <CameraIcon color={colors.ink} size={30} strokeWidth={2.8} />
+              )}
+            </View>
+          </Pressable>
         </View>
       </View>
     </Modal>
@@ -1068,6 +1359,7 @@ export default function App() {
   const [palletNameModal, setPalletNameModal] = useState<PalletNameModalState>({
     mode: 'closed',
   });
+  const [cameraContext, setCameraContext] = useState<PendingPickerContext | null>(null);
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
   const [imageViewerUri, setImageViewerUri] = useState<string | null>(null);
   const [loadSubmitting, setLoadSubmitting] = useState(false);
@@ -1081,17 +1373,26 @@ export default function App() {
     pickerFlowLockedRef.current = false;
   }, []);
 
-  const closePalletNameModal = useCallback(() => {
-    setPalletNameModal((state) => {
-      if (state.mode === 'create') {
-        releasePickerFlow();
-      }
+  const closePalletCamera = useCallback(() => {
+    setCameraContext(null);
+    setBusyMessage(null);
+    releasePickerFlow();
+  }, [releasePickerFlow]);
 
-      return { mode: 'closed' };
-    });
+  const closePalletNameModal = useCallback(() => {
+    const shouldDiscardImage = palletNameModal.mode === 'create';
+
+    setPalletNameModal({ mode: 'closed' });
+
+    if (shouldDiscardImage) {
+      clearPendingPickerContext().catch(() => undefined);
+      setBusyMessage(null);
+      releasePickerFlow();
+    }
+
     palletNameSubmittingRef.current = false;
     setPalletNameSubmitting(false);
-  }, [releasePickerFlow]);
+  }, [palletNameModal.mode, releasePickerFlow]);
 
   const navigateTo = useCallback(
     (nextScreen: Screen) => {
@@ -1129,6 +1430,11 @@ export default function App() {
       return true;
     }
 
+    if (cameraContext) {
+      closePalletCamera();
+      return true;
+    }
+
     if (palletNameModal.mode !== 'closed') {
       closePalletNameModal();
       return true;
@@ -1148,6 +1454,8 @@ export default function App() {
 
     return false;
   }, [
+    cameraContext,
+    closePalletCamera,
     closePalletNameModal,
     imageViewerUri,
     loadModal.mode,
@@ -1244,20 +1552,27 @@ export default function App() {
     }
   };
 
-  const handleDeleteLoad = () => {
-    if (!currentLoad) {
+  const handleDeleteLoad = (loadToDelete?: Load | LoadSummary | null) => {
+    const targetLoad = loadToDelete ?? currentLoad;
+
+    if (!targetLoad) {
       return;
     }
 
-    Alert.alert('Excluir carga', `Excluir ${currentLoad.name}?`, [
+    Alert.alert('Excluir carga', `Excluir ${targetLoad.name}?`, [
       { text: 'Cancelar', style: 'cancel' },
       {
         text: 'Excluir',
         style: 'destructive',
         onPress: async () => {
           try {
-            await deleteLoad(currentLoad.id);
-            replaceScreen({ name: 'home' });
+            await deleteLoad(targetLoad.id);
+
+            if (screen.name === 'home') {
+              await refreshHome();
+            } else {
+              replaceScreen({ name: 'home' });
+            }
           } catch (error) {
             Alert.alert('Erro ao excluir', errorMessage(error));
           }
@@ -1266,33 +1581,36 @@ export default function App() {
     ]);
   };
 
-  const requestPalletImage = (source: ImageSource) => {
-    if (screen.name !== 'load') {
-      return;
-    }
+  const openPalletNameAfterImage = useCallback(
+    async (context: PendingPickerContext, asset: PickedImageAsset) => {
+      if (!asset.base64) {
+        throw new Error('A foto não retornou em base64.');
+      }
 
-    if (busyMessage || pickerFlowLockedRef.current || palletNameModal.mode !== 'closed') {
-      return;
-    }
-
-    pickerFlowLockedRef.current = true;
-
-    setPalletNameModal({
-      mode: 'create',
-      source,
-      loadId: screen.loadId,
-      defaultName: nextPalletName(pallets),
-    });
-  };
+      const loadPallets = await listPallets(context.loadId);
+      await clearPendingPickerContext();
+      setBusyMessage(null);
+      setPalletNameModal({
+        mode: 'create',
+        context,
+        asset: {
+          base64: asset.base64,
+          uri: asset.uri,
+        },
+        defaultName: nextPalletName(loadPallets),
+      });
+    },
+    [],
+  );
 
   const processPickedAsset = useCallback(
-    async (context: PendingPickerContext, asset: ImagePicker.ImagePickerAsset) => {
+    async (context: PendingPickerContext, asset: PickedImageAsset, palletName: string) => {
       let palletId: number | null = null;
       let gallerySaveError: string | null = null;
 
       try {
         if (!asset.base64) {
-          throw new Error('A foto nao retornou em base64.');
+          throw new Error('A foto não retornou em base64.');
         }
 
         if (context.source === 'camera') {
@@ -1305,7 +1623,7 @@ export default function App() {
         }
 
         setBusyMessage('Salvando palete');
-        palletId = await createProcessingPallet(context.loadId, asset.base64, context.palletName);
+        palletId = await createProcessingPallet(context.loadId, asset.base64, palletName);
         await clearPendingPickerContext();
         await refreshLoad(context.loadId);
 
@@ -1316,8 +1634,8 @@ export default function App() {
 
         if (gallerySaveError) {
           Alert.alert(
-            'Foto nao salva na galeria',
-            `O palete foi contado normalmente, mas a foto da camera nao foi salva na galeria. ${gallerySaveError}`,
+            'Foto não salva na galeria',
+            `O palete foi contado normalmente, mas a foto da câmera não foi salva na galeria. ${gallerySaveError}`,
           );
         }
       } catch (error) {
@@ -1327,7 +1645,7 @@ export default function App() {
           await markPalletError(palletId, context.loadId, message);
           navigateTo({ name: 'pallet', loadId: context.loadId, palletId });
         } else {
-          Alert.alert('Nao foi possivel adicionar', message);
+          Alert.alert('Não foi possível adicionar', message);
         }
       } finally {
         await clearPendingPickerContext().catch(() => undefined);
@@ -1339,37 +1657,82 @@ export default function App() {
     [navigateTo, refreshCurrentScreen, refreshLoad, releasePickerFlow],
   );
 
+  const requestPalletImage = (source: ImageSource) => {
+    if (screen.name !== 'load') {
+      return;
+    }
+
+    if (pallets.length >= MAX_PALLETS_PER_LOAD) {
+      Alert.alert(
+        'Limite atingido',
+        `Cada carga aceita no máximo ${MAX_PALLETS_PER_LOAD} paletes.`,
+      );
+      return;
+    }
+
+    if (
+      busyMessage ||
+      pickerFlowLockedRef.current ||
+      palletNameModal.mode !== 'closed' ||
+      cameraContext
+    ) {
+      return;
+    }
+
+    const context: PendingPickerContext = {
+      loadId: screen.loadId,
+      source,
+    };
+
+    pickerFlowLockedRef.current = true;
+
+    if (source === 'camera') {
+      openPalletCameraSafely(context);
+    } else {
+      pickImageSafely(context);
+    }
+  };
+
+  const openPalletCameraSafely = useCallback(
+    async (context: PendingPickerContext) => {
+      try {
+        setBusyMessage('Abrindo câmera');
+
+        const permission = await ExpoCamera.requestCameraPermissionsAsync();
+        if (!permission.granted) {
+          throw new Error('Permita o uso da câmera para fotografar o palete.');
+        }
+
+        await clearPendingPickerContext();
+        setCameraContext(context);
+      } catch (error) {
+        await clearPendingPickerContext().catch(() => undefined);
+        Alert.alert('Não foi possível adicionar', errorMessage(error));
+        releasePickerFlow();
+        await refreshCurrentScreen().catch(() => undefined);
+      } finally {
+        setBusyMessage(null);
+      }
+    },
+    [refreshCurrentScreen, releasePickerFlow],
+  );
+
   const pickImageSafely = useCallback(
     async (context: PendingPickerContext) => {
-      let handedOffToProcessor = false;
+      let handedOffToNaming = false;
 
       try {
-        setBusyMessage(context.source === 'camera' ? 'Abrindo camera' : 'Abrindo galeria');
-
-        if (context.source === 'camera') {
-          const permission = await ImagePicker.requestCameraPermissionsAsync();
-          if (!permission.granted) {
-            throw new Error('Permita o uso da camera para fotografar o palete.');
-          }
-        }
+        setBusyMessage('Abrindo galeria');
 
         await savePendingPickerContext(context);
         await waitForPickerLaunchWindow();
 
-        const result =
-          context.source === 'camera'
-            ? await ImagePicker.launchCameraAsync({
-                allowsEditing: false,
-                base64: true,
-                mediaTypes: ['images'],
-                quality: 0.72,
-              })
-            : await ImagePicker.launchImageLibraryAsync({
-                allowsEditing: false,
-                base64: true,
-                mediaTypes: ['images'],
-                quality: 0.72,
-              });
+        const result = await ImagePicker.launchImageLibraryAsync({
+          allowsEditing: false,
+          base64: true,
+          mediaTypes: ['images'],
+          quality: 0.72,
+        });
 
         if (result.canceled) {
           await clearPendingPickerContext();
@@ -1381,20 +1744,20 @@ export default function App() {
           throw new Error('Nenhuma imagem foi selecionada.');
         }
 
-        handedOffToProcessor = true;
-        await processPickedAsset(context, asset);
+        await openPalletNameAfterImage(context, asset);
+        handedOffToNaming = true;
       } catch (error) {
         await clearPendingPickerContext().catch(() => undefined);
-        Alert.alert('Nao foi possivel adicionar', errorMessage(error));
+        Alert.alert('Não foi possível adicionar', errorMessage(error));
       } finally {
-        if (!handedOffToProcessor) {
+        if (!handedOffToNaming) {
           setBusyMessage(null);
           releasePickerFlow();
           await refreshCurrentScreen().catch(() => undefined);
         }
       }
     },
-    [processPickedAsset, refreshCurrentScreen, releasePickerFlow],
+    [openPalletNameAfterImage, refreshCurrentScreen, releasePickerFlow],
   );
 
   const recoverPendingPickerResult = useCallback(async () => {
@@ -1407,6 +1770,11 @@ export default function App() {
       return;
     }
 
+    if (context.source !== 'gallery') {
+      await clearPendingPickerContext();
+      return;
+    }
+
     const result = await ImagePicker.getPendingResultAsync();
 
     if (!result) {
@@ -1416,7 +1784,7 @@ export default function App() {
 
     if (isImagePickerErrorResult(result)) {
       await clearPendingPickerContext();
-      Alert.alert('Nao foi possivel adicionar', result.message);
+      Alert.alert('Não foi possível adicionar', result.message);
       return;
     }
 
@@ -1428,13 +1796,19 @@ export default function App() {
     const asset = result.assets[0];
     if (!asset) {
       await clearPendingPickerContext();
-      Alert.alert('Nao foi possivel adicionar', 'Nenhuma imagem foi selecionada.');
+      Alert.alert('Não foi possível adicionar', 'Nenhuma imagem foi selecionada.');
       return;
     }
 
     pickerFlowLockedRef.current = true;
-    await processPickedAsset(context, asset);
-  }, [processPickedAsset]);
+    try {
+      await openPalletNameAfterImage(context, asset);
+    } catch (error) {
+      await clearPendingPickerContext().catch(() => undefined);
+      releasePickerFlow();
+      Alert.alert('Não foi possível adicionar', errorMessage(error));
+    }
+  }, [openPalletNameAfterImage, releasePickerFlow]);
 
   useEffect(() => {
     if (!ready) {
@@ -1442,7 +1816,7 @@ export default function App() {
     }
 
     recoverPendingPickerResult().catch((error) => {
-      Alert.alert('Nao foi possivel recuperar a imagem', errorMessage(error));
+      Alert.alert('Não foi possível recuperar a imagem', errorMessage(error));
     });
   }, [ready, recoverPendingPickerResult]);
 
@@ -1463,13 +1837,7 @@ export default function App() {
 
     try {
       if (state.mode === 'create') {
-        palletNameSubmittingRef.current = false;
-        setPalletNameSubmitting(false);
-        await pickImageSafely({
-          loadId: state.loadId,
-          source: state.source,
-          palletName: name,
-        });
+        await processPickedAsset(state.context, state.asset, name);
         return;
       }
 
@@ -1485,6 +1853,29 @@ export default function App() {
       setPalletNameSubmitting(false);
     }
   };
+
+  const handleCameraCaptured = useCallback(
+    async (picture: CameraCapturedPicture) => {
+      const context = cameraContext;
+
+      if (!context) {
+        return;
+      }
+
+      setCameraContext(null);
+      try {
+        await openPalletNameAfterImage(context, {
+          base64: picture.base64,
+          uri: picture.uri,
+        });
+      } catch (error) {
+        setBusyMessage(null);
+        releasePickerFlow();
+        Alert.alert('Não foi possível adicionar', errorMessage(error));
+      }
+    },
+    [cameraContext, openPalletNameAfterImage, releasePickerFlow],
+  );
 
   const handleExportPdf = async () => {
     if (!currentLoad) {
@@ -1603,6 +1994,8 @@ export default function App() {
         <HomeScreen
           loads={loads}
           onCreate={() => setLoadModal({ mode: 'create' })}
+          onDelete={(load) => handleDeleteLoad(load)}
+          onEdit={(load) => setLoadModal({ mode: 'edit', load })}
           onOpen={(loadId) => navigateTo({ name: 'load', loadId })}
         />
       );
@@ -1614,8 +2007,7 @@ export default function App() {
           onAddCamera={() => requestPalletImage('camera')}
           onAddGallery={() => requestPalletImage('gallery')}
           onBack={goBack}
-          onDelete={handleDeleteLoad}
-          onEdit={() => setLoadModal({ mode: 'edit', load: currentLoad })}
+          onEditPalletName={(pallet) => setPalletNameModal({ mode: 'edit', pallet })}
           onExport={handleExportPdf}
           onOpenPallet={(palletId) =>
             navigateTo({ name: 'pallet', loadId: currentLoad.id, palletId })
@@ -1643,28 +2035,35 @@ export default function App() {
   }
 
   return (
-    <SafeAreaProvider initialMetrics={initialWindowMetrics}>
-      <View style={styles.app}>
-        <StatusBar style="dark" />
-        {content}
-        <LoadFormModal
-          onClose={() => setLoadModal({ mode: 'closed' })}
-          onSave={handleSaveLoad}
-          saving={loadSubmitting}
-          state={loadModal}
-        />
-        <PalletNameModal
-          onClose={closePalletNameModal}
-          onSave={handleSavePalletName}
-          saving={palletNameSubmitting}
-          state={palletNameModal}
-        />
-        <ImageViewerModal
-          imageUri={imageViewerUri}
-          onClose={() => setImageViewerUri(null)}
-        />
-      </View>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={styles.gestureRoot}>
+      <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+        <View style={styles.app}>
+          <StatusBar style="dark" />
+          {content}
+          <LoadFormModal
+            onClose={() => setLoadModal({ mode: 'closed' })}
+            onSave={handleSaveLoad}
+            saving={loadSubmitting}
+            state={loadModal}
+          />
+          <PalletNameModal
+            onClose={closePalletNameModal}
+            onSave={handleSavePalletName}
+            saving={palletNameSubmitting}
+            state={palletNameModal}
+          />
+          <PalletCameraModal
+            onCapture={handleCameraCaptured}
+            onClose={closePalletCamera}
+            visible={Boolean(cameraContext)}
+          />
+          <ImageViewerModal
+            imageUri={imageViewerUri}
+            onClose={() => setImageViewerUri(null)}
+          />
+        </View>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 
@@ -1696,6 +2095,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
     flex: 1,
   },
+  gestureRoot: {
+    flex: 1,
+  },
   bottomActionBar: {
     backgroundColor: colors.surface,
     borderColor: colors.border,
@@ -1720,6 +2122,104 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontSize: 14,
     fontWeight: '700',
+  },
+  cameraBottomBar: {
+    alignItems: 'center',
+    bottom: 0,
+    left: 0,
+    paddingTop: spacing.xl,
+    position: 'absolute',
+    right: 0,
+    zIndex: 3,
+  },
+  cameraCaptureButton: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.22)',
+    borderColor: 'rgba(255, 255, 255, 0.92)',
+    borderRadius: 42,
+    borderWidth: 2,
+    height: 76,
+    justifyContent: 'center',
+    width: 76,
+  },
+  cameraCaptureButtonInner: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: 28,
+    height: 56,
+    justifyContent: 'center',
+    width: 56,
+  },
+  cameraGuide: {
+    aspectRatio: 0.62,
+    backgroundColor: 'rgba(20, 122, 92, 0.08)',
+    borderColor: 'rgba(255, 255, 255, 0.96)',
+    borderRadius: radius.md,
+    borderWidth: 3,
+    shadowColor: colors.shadow,
+    shadowOffset: { height: 0, width: 0 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    width: '68%',
+  },
+  cameraLoading: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.25)',
+    bottom: 0,
+    justifyContent: 'center',
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    zIndex: 2,
+  },
+  cameraModal: {
+    backgroundColor: '#000000',
+    flex: 1,
+  },
+  cameraOverlay: {
+    alignItems: 'center',
+    bottom: 0,
+    justifyContent: 'center',
+    left: 0,
+    paddingBottom: 72,
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    zIndex: 1,
+  },
+  cameraPreview: {
+    bottom: 0,
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0,
+  },
+  cameraTopBar: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    left: spacing.lg,
+    position: 'absolute',
+    right: spacing.lg,
+    top: 0,
+    zIndex: 3,
+  },
+  cameraZoomText: {
+    color: colors.ink,
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  cameraZoomToggle: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    height: 42,
+    justifyContent: 'center',
+    minWidth: 58,
+    paddingHorizontal: spacing.sm,
   },
   button: {
     alignItems: 'center',
@@ -1924,6 +2424,18 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     justifyContent: 'center',
   },
+  limitBox: {
+    backgroundColor: colors.warningSoft,
+    borderColor: '#F0D390',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    padding: spacing.md,
+  },
+  limitText: {
+    color: colors.accent,
+    fontSize: 13,
+    fontWeight: '800',
+  },
   loadRow: {
     alignItems: 'center',
     backgroundColor: colors.surface,
@@ -1934,6 +2446,13 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     minHeight: 76,
     padding: spacing.md,
+  },
+  loadOpenArea: {
+    alignItems: 'center',
+    flex: 1,
+    flexDirection: 'row',
+    gap: spacing.md,
+    minWidth: 0,
   },
   loadRowBody: {
     flex: 1,
@@ -2093,6 +2612,13 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     padding: spacing.sm,
   },
+  palletRowOpenArea: {
+    alignItems: 'center',
+    flex: 1,
+    flexDirection: 'row',
+    gap: spacing.md,
+    minWidth: 0,
+  },
   palletRowBody: {
     flex: 1,
     gap: spacing.xs,
@@ -2146,6 +2672,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexDirection: 'row',
     gap: spacing.sm,
+  },
+  rowActions: {
+    flexDirection: 'row',
+    gap: spacing.xs,
   },
   statCard: {
     backgroundColor: colors.surface,
@@ -2201,6 +2731,15 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 0,
     lineHeight: 36,
+  },
+  titleActionRow: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  titleActionText: {
+    flex: 1,
+    minWidth: 0,
   },
   totalBadge: {
     alignItems: 'center',

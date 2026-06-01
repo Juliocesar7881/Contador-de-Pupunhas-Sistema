@@ -50,5 +50,4 @@ export type RoboflowAnalysis = {
 export type PendingPickerContext = {
   loadId: number;
   source: 'camera' | 'gallery';
-  palletName: string;
 };

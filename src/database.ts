@@ -8,7 +8,7 @@ import type {
   RoboflowAnalysis,
 } from './types';
 
-export const MAX_PALLETS_PER_LOAD = 12;
+export const MAX_PALLETS_PER_LOAD = 20;
 const PENDING_PICKER_CONTEXT_KEY = 'pending_picker_context';
 
 const dbPromise = SQLite.openDatabaseAsync('contador-pupunha.db');
@@ -86,14 +86,11 @@ function parsePendingPickerContext(value: string): PendingPickerContext | null {
 
     if (
       typeof parsed.loadId === 'number' &&
-      (parsed.source === 'camera' || parsed.source === 'gallery') &&
-      typeof parsed.palletName === 'string' &&
-      parsed.palletName.trim()
+      (parsed.source === 'camera' || parsed.source === 'gallery')
     ) {
       return {
         loadId: parsed.loadId,
         source: parsed.source,
-        palletName: parsed.palletName,
       };
     }
   } catch {
@@ -218,7 +215,7 @@ export async function createProcessingPallet(
   );
 
   if ((existing?.count ?? 0) >= MAX_PALLETS_PER_LOAD) {
-    throw new Error(`Cada carga aceita no maximo ${MAX_PALLETS_PER_LOAD} paletes.`);
+    throw new Error(`Cada carga aceita no máximo ${MAX_PALLETS_PER_LOAD} paletes.`);
   }
 
   const palletNumber = existing?.next_number ?? 1;

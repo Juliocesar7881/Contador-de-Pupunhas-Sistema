@@ -176,7 +176,7 @@ export async function shareLoadPdf(load: Load, pallets: Pallet[]) {
   const canShare = await Sharing.isAvailableAsync();
 
   if (!canShare) {
-    throw new Error('Compartilhamento nao esta disponivel neste aparelho.');
+    throw new Error('Compartilhamento não está disponível neste aparelho.');
   }
 
   await Sharing.shareAsync(uri, {

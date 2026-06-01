@@ -15,7 +15,7 @@ npm start
 
 ## Gerar APK de teste
 
-O build usa EAS Cloud. Faca login uma vez:
+O build usa EAS Cloud. Faça login uma vez:
 
 ```bash
 eas login
