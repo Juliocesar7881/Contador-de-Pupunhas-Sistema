@@ -26,7 +26,6 @@ import {
   Alert,
   BackHandler,
   Image as RNImage,
-  InteractionManager,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -191,26 +190,55 @@ function delay(ms: number) {
   });
 }
 
-function waitForPickerLaunchWindow() {
-  return new Promise<void>((resolve) => {
-    InteractionManager.runAfterInteractions(() => {
-      setTimeout(resolve, Platform.OS === 'android' ? 500 : 0);
-    });
-  });
+function rawErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return typeof error === 'string' ? error : 'Algo deu errado.';
 }
 
-function errorMessage(error: unknown) {
-  const message = error instanceof Error ? error.message : 'Algo deu errado.';
+function isGalleryLaunchError(error: unknown) {
+  const message = rawErrorMessage(error);
 
-  if (
+  return (
     message.includes('ActivityResultLauncher') ||
     message.includes('ImageLibraryContract') ||
     message.includes('launchImageLibraryAsync')
-  ) {
+  );
+}
+
+function errorMessage(error: unknown) {
+  const message = rawErrorMessage(error);
+
+  if (isGalleryLaunchError(error)) {
     return 'A galeria não abriu corretamente. Tente novamente; se continuar, feche e abra o app.';
   }
 
   return message;
+}
+
+async function launchPalletImageLibrary() {
+  const maxAttempts = Platform.OS === 'android' ? 2 : 1;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await ImagePicker.launchImageLibraryAsync({
+        allowsEditing: false,
+        base64: true,
+        mediaTypes: ['images'],
+        quality: 0.72,
+      });
+    } catch (error) {
+      if (!isGalleryLaunchError(error) || attempt === maxAttempts) {
+        throw error;
+      }
+
+      await delay(350);
+    }
+  }
+
+  throw new Error('A galeria não abriu corretamente.');
 }
 
 async function saveCameraCaptureToGallery(uri: string | undefined) {
@@ -435,6 +463,13 @@ function HomeScreen({
           <View>
             <Text style={styles.kicker}>Contador de Pupunha</Text>
             <Text style={styles.title}>Cargas</Text>
+          </View>
+          <View style={styles.homeLogoBadge}>
+            <RNImage
+              accessibilityLabel="Logo do Contador Pupunha"
+              source={require('./assets/icon.png')}
+              style={styles.homeLogo}
+            />
           </View>
         </View>
 
@@ -1724,15 +1759,13 @@ export default function App() {
       try {
         setBusyMessage('Abrindo galeria');
 
-        await savePendingPickerContext(context);
-        await waitForPickerLaunchWindow();
+        if (Platform.OS === 'android') {
+          await savePendingPickerContext(context);
+        } else {
+          await clearPendingPickerContext();
+        }
 
-        const result = await ImagePicker.launchImageLibraryAsync({
-          allowsEditing: false,
-          base64: true,
-          mediaTypes: ['images'],
-          quality: 0.72,
-        });
+        const result = await launchPalletImageLibrary();
 
         if (result.canceled) {
           await clearPendingPickerContext();
@@ -1748,7 +1781,11 @@ export default function App() {
         handedOffToNaming = true;
       } catch (error) {
         await clearPendingPickerContext().catch(() => undefined);
-        Alert.alert('Não foi possível adicionar', errorMessage(error));
+        if (isGalleryLaunchError(error)) {
+          Alert.alert('Não foi possível abrir a galeria', errorMessage(error));
+        } else {
+          Alert.alert('Não foi possível adicionar', errorMessage(error));
+        }
       } finally {
         if (!handedOffToNaming) {
           setBusyMessage(null);
@@ -1784,7 +1821,7 @@ export default function App() {
 
     if (isImagePickerErrorResult(result)) {
       await clearPendingPickerContext();
-      Alert.alert('Não foi possível adicionar', result.message);
+      Alert.alert('Não foi possível abrir a galeria', errorMessage(result.message));
       return;
     }
 
@@ -2354,6 +2391,20 @@ const styles = StyleSheet.create({
   },
   heroText: {
     flex: 1,
+  },
+  homeLogo: {
+    borderRadius: radius.sm,
+    height: '100%',
+    width: '100%',
+  },
+  homeLogoBadge: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    height: 72,
+    padding: 4,
+    width: 72,
   },
   iconButton: {
     alignItems: 'center',
