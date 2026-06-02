@@ -36,6 +36,7 @@ import {
   Text,
   TextInput,
   View,
+  type GestureResponderEvent,
 } from 'react-native';
 import {
   AlertTriangle,
@@ -314,12 +315,14 @@ function IconButton({
   onPress,
   tone = 'neutral',
   disabled = false,
+  stopPropagation = false,
 }: {
   label: string;
   icon: IconComponent;
-  onPress: () => void;
+  onPress: (event: GestureResponderEvent) => void;
   tone?: 'neutral' | 'primary' | 'danger';
   disabled?: boolean;
+  stopPropagation?: boolean;
 }) {
   const color =
     tone === 'danger' ? colors.danger : tone === 'primary' ? colors.primary : colors.ink;
@@ -329,7 +332,12 @@ function IconButton({
       accessibilityLabel={label}
       accessibilityRole="button"
       disabled={disabled}
-      onPress={onPress}
+      onPress={(event) => {
+        if (stopPropagation) {
+          event.stopPropagation();
+        }
+        onPress(event);
+      }}
       style={({ pressed }) => [
         styles.iconButton,
         {
@@ -464,13 +472,6 @@ function HomeScreen({
             <Text style={styles.kicker}>Contador de Pupunha</Text>
             <Text style={styles.title}>Cargas</Text>
           </View>
-          <View style={styles.homeLogoBadge}>
-            <RNImage
-              accessibilityLabel="Logo do Contador Pupunha"
-              source={require('./assets/icon.png')}
-              style={styles.homeLogo}
-            />
-          </View>
         </View>
 
         <View style={styles.section}>
@@ -487,15 +488,19 @@ function HomeScreen({
               const average = averagePerPallet(load.total_count, load.pallet_count);
 
               return (
-                <View key={load.id} style={[styles.loadRow, styles.loadRowStack]}>
+                <Pressable
+                  accessibilityLabel={`Abrir ${load.name}`}
+                  accessibilityRole="button"
+                  key={load.id}
+                  onPress={() => onOpen(load.id)}
+                  style={({ pressed }) => [
+                    styles.loadRow,
+                    styles.loadRowStack,
+                    pressed && styles.loadRowPressed,
+                  ]}
+                >
                   <View style={styles.loadRowHeader}>
-                    <Pressable
-                      onPress={() => onOpen(load.id)}
-                      style={({ pressed }) => [
-                        styles.loadOpenArea,
-                        { opacity: pressed ? 0.76 : 1 },
-                      ]}
-                    >
+                    <View style={styles.loadOpenArea}>
                       <View style={styles.loadRowIcon}>
                         <Truck color={colors.primary} size={20} strokeWidth={2.2} />
                       </View>
@@ -505,26 +510,26 @@ function HomeScreen({
                         </Text>
                         <Text style={styles.loadRowMeta}>{formatDateTime(load.created_at)}</Text>
                       </View>
-                    </Pressable>
+                    </View>
 
                     <View style={styles.rowActions}>
-                      <IconButton icon={Pencil} label={`Editar ${load.name}`} onPress={() => onEdit(load)} />
+                      <IconButton
+                        icon={Pencil}
+                        label={`Editar ${load.name}`}
+                        onPress={() => onEdit(load)}
+                        stopPropagation
+                      />
                       <IconButton
                         icon={Trash2}
                         label={`Excluir ${load.name}`}
                         onPress={() => onDelete(load)}
+                        stopPropagation
                         tone="danger"
                       />
                     </View>
                   </View>
 
-                  <Pressable
-                    onPress={() => onOpen(load.id)}
-                    style={({ pressed }) => [
-                      styles.loadMetricsRow,
-                      { opacity: pressed ? 0.76 : 1 },
-                    ]}
-                  >
+                  <View style={styles.loadMetricsRow}>
                     <View style={styles.loadMetric}>
                       <Text style={styles.loadMetricValue}>{load.pallet_count}</Text>
                       <Text style={styles.loadMetricLabel}>paletes</Text>
@@ -537,8 +542,8 @@ function HomeScreen({
                       <Text style={styles.loadMetricValue}>{average}</Text>
                       <Text style={styles.loadMetricLabel}>média/palete</Text>
                     </View>
-                  </Pressable>
-                </View>
+                  </View>
+                </Pressable>
               );
             })
           )}
@@ -1508,6 +1513,8 @@ export default function App() {
     const [load, loadPallets] = await Promise.all([getLoad(loadId), listPallets(loadId)]);
     setCurrentLoad(load ?? null);
     setPallets(loadPallets);
+
+    return load ?? null;
   }, []);
 
   const refreshPallet = useCallback(async (loadId: number, palletId: number) => {
@@ -1560,6 +1567,29 @@ export default function App() {
     };
   }, [goBack]);
 
+  const handleOpenLoad = useCallback(
+    async (loadId: number) => {
+      if (screen.name === 'load' && screen.loadId === loadId) {
+        return;
+      }
+
+      try {
+        const load = await refreshLoad(loadId);
+
+        if (!load) {
+          Alert.alert('Carga não encontrada', 'Atualize a lista e tente novamente.');
+          await refreshHome();
+          return;
+        }
+
+        navigateTo({ name: 'load', loadId });
+      } catch (error) {
+        Alert.alert('Erro ao abrir carga', errorMessage(error));
+      }
+    },
+    [navigateTo, refreshHome, refreshLoad, screen],
+  );
+
   const handleSaveLoad = async (name: string, note: string | null) => {
     if (loadSubmittingRef.current) {
       return;
@@ -1578,6 +1608,7 @@ export default function App() {
 
       const loadId = await createLoad(name, note);
       setLoadModal({ mode: 'closed' });
+      await refreshLoad(loadId);
       navigateTo({ name: 'load', loadId });
     } catch (error) {
       Alert.alert('Erro ao salvar', errorMessage(error));
@@ -2033,7 +2064,7 @@ export default function App() {
           onCreate={() => setLoadModal({ mode: 'create' })}
           onDelete={(load) => handleDeleteLoad(load)}
           onEdit={(load) => setLoadModal({ mode: 'edit', load })}
-          onOpen={(loadId) => navigateTo({ name: 'load', loadId })}
+          onOpen={handleOpenLoad}
         />
       );
     } else if (screen.name === 'load' && currentLoad) {
@@ -2392,20 +2423,6 @@ const styles = StyleSheet.create({
   heroText: {
     flex: 1,
   },
-  homeLogo: {
-    borderRadius: radius.sm,
-    height: '100%',
-    width: '100%',
-  },
-  homeLogoBadge: {
-    backgroundColor: colors.surface,
-    borderColor: colors.border,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    height: 72,
-    padding: 4,
-    width: 72,
-  },
   iconButton: {
     alignItems: 'center',
     backgroundColor: colors.surface,
@@ -2497,6 +2514,9 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     minHeight: 76,
     padding: spacing.md,
+  },
+  loadRowPressed: {
+    opacity: 0.76,
   },
   loadOpenArea: {
     alignItems: 'center',
