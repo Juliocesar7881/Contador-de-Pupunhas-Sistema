@@ -2,7 +2,7 @@
   "expo": {
     "name": "Contador Pupunha",
     "slug": "contador-pupunha",
-    "version": "1.0.6",
+    "version": "1.0.7",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -11,7 +11,7 @@
     },
     "android": {
       "package": "com.luchini.contadorpupunha",
-      "versionCode": 10,
+      "versionCode": 11,
       "adaptiveIcon": {
         "backgroundColor": "#F5FAF7",
         "foregroundImage": "./assets/android-icon-foreground.png"
@@ -55,8 +55,8 @@
         "expo-splash-screen",
         {
           "backgroundColor": "#F5FAF7",
-          "image": "./assets/splash-icon.png",
-          "imageWidth": 180,
+          "image": "./assets/splash-transparent.png",
+          "imageWidth": 1,
           "resizeMode": "contain"
         }
       ]
