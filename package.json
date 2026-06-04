@@ -1,10 +1,11 @@
 {
   "name": "contador-pupunha",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "main": "index.ts",
   "dependencies": {
     "expo": "~56.0.4",
     "expo-camera": "~56.0.7",
+    "expo-image-manipulator": "~56.0.16",
     "expo-image-picker": "~56.0.14",
     "expo-media-library": "~56.0.6",
     "expo-print": "~56.0.3",

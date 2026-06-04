@@ -4,6 +4,7 @@ import {
   CameraView,
   type CameraCapturedPicture,
 } from 'expo-camera';
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
 import {
@@ -102,6 +103,34 @@ type PickedImageAsset = {
   base64?: string | null;
 };
 
+type CameraZoomPreset = '1.8x' | '2.5x';
+
+type CameraZoomConfig = {
+  cropZoom: number;
+  label: CameraZoomPreset;
+  previewZoom: number;
+};
+
+const CAMERA_ZOOM_CONFIGS: Record<CameraZoomPreset, CameraZoomConfig> = {
+  '1.8x': {
+    cropZoom: 1.8,
+    label: '1.8x',
+    previewZoom: 0.18,
+  },
+  '2.5x': {
+    cropZoom: 2.5,
+    label: '2.5x',
+    previewZoom: 0.25,
+  },
+};
+
+const DEFAULT_CAMERA_ZOOM_PRESET: CameraZoomPreset = '1.8x';
+const CAMERA_ZOOM_SEQUENCE: CameraZoomPreset[] = ['1.8x', '2.5x'];
+
+const IMAGE_VIEWER_MIN_SCALE = 1;
+const IMAGE_VIEWER_MAX_SCALE = 5;
+const IMAGE_VIEWER_DOUBLE_TAP_SCALE = 2.5;
+
 type LoadModalState =
   | { mode: 'closed' }
   | { mode: 'create' }
@@ -189,6 +218,58 @@ function delay(ms: number) {
   return new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function clamp(value: number, minimum: number, maximum: number) {
+  'worklet';
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+async function applyCameraCaptureZoom(
+  picture: CameraCapturedPicture,
+  zoomFactor: number,
+): Promise<PickedImageAsset> {
+  if (!picture.uri) {
+    throw new Error('A câmera não retornou um arquivo para processar.');
+  }
+
+  if (!picture.width || !picture.height) {
+    throw new Error('A câmera não retornou o tamanho da foto.');
+  }
+
+  const safeZoomFactor = Math.max(1, zoomFactor);
+  const cropWidth = Math.max(1, Math.floor(picture.width / safeZoomFactor));
+  const cropHeight = Math.max(1, Math.floor(picture.height / safeZoomFactor));
+  const originX = Math.max(0, Math.floor((picture.width - cropWidth) / 2));
+  const originY = Math.max(0, Math.floor((picture.height - cropHeight) / 2));
+
+  const zoomedImage = await ImageManipulator.manipulateAsync(
+    picture.uri,
+    [
+      {
+        crop: {
+          height: cropHeight,
+          originX,
+          originY,
+          width: cropWidth,
+        },
+      },
+    ],
+    {
+      base64: true,
+      compress: 0.72,
+      format: ImageManipulator.SaveFormat.JPEG,
+    },
+  );
+
+  if (!zoomedImage.base64) {
+    throw new Error('A foto com zoom não retornou em base64.');
+  }
+
+  return {
+    base64: zoomedImage.base64,
+    uri: zoomedImage.uri,
+  };
 }
 
 function rawErrorMessage(error: unknown) {
@@ -1110,10 +1191,12 @@ function ImageViewerModal({
   const translateY = useSharedValue(0);
   const savedTranslateX = useSharedValue(0);
   const savedTranslateY = useSharedValue(0);
+  const viewerWidth = useSharedValue(1);
+  const viewerHeight = useSharedValue(1);
 
   useEffect(() => {
-    scale.value = withTiming(1);
-    savedScale.value = 1;
+    scale.value = withTiming(IMAGE_VIEWER_MIN_SCALE);
+    savedScale.value = IMAGE_VIEWER_MIN_SCALE;
     translateX.value = withTiming(0);
     translateY.value = withTiming(0);
     savedTranslateX.value = 0;
@@ -1125,40 +1208,60 @@ function ImageViewerModal({
       savedScale.value = scale.value;
     })
     .onUpdate((event) => {
-      scale.value = Math.min(4, Math.max(1, savedScale.value * event.scale));
+      const nextScale = clamp(
+        savedScale.value * event.scale,
+        IMAGE_VIEWER_MIN_SCALE,
+        IMAGE_VIEWER_MAX_SCALE,
+      );
+      scale.value = nextScale;
+
+      const horizontalLimit = Math.max(0, (viewerWidth.value * (nextScale - 1)) / 2);
+      const verticalLimit = Math.max(0, (viewerHeight.value * (nextScale - 1)) / 2);
+      translateX.value = clamp(translateX.value, -horizontalLimit, horizontalLimit);
+      translateY.value = clamp(translateY.value, -verticalLimit, verticalLimit);
     })
     .onEnd(() => {
       if (scale.value <= 1.01) {
-        scale.value = withTiming(1);
+        scale.value = withTiming(IMAGE_VIEWER_MIN_SCALE);
         translateX.value = withTiming(0);
         translateY.value = withTiming(0);
         savedTranslateX.value = 0;
         savedTranslateY.value = 0;
+        savedScale.value = IMAGE_VIEWER_MIN_SCALE;
+        return;
       }
 
       savedScale.value = scale.value;
+      const horizontalLimit = Math.max(0, (viewerWidth.value * (scale.value - 1)) / 2);
+      const verticalLimit = Math.max(0, (viewerHeight.value * (scale.value - 1)) / 2);
+      translateX.value = withTiming(clamp(translateX.value, -horizontalLimit, horizontalLimit));
+      translateY.value = withTiming(clamp(translateY.value, -verticalLimit, verticalLimit));
     });
 
   const panGesture = Gesture.Pan()
+    .minDistance(2)
     .onStart(() => {
       savedTranslateX.value = translateX.value;
       savedTranslateY.value = translateY.value;
     })
     .onUpdate((event) => {
-      if (scale.value <= 1) {
+      if (scale.value <= IMAGE_VIEWER_MIN_SCALE) {
         translateX.value = 0;
         translateY.value = 0;
         return;
       }
 
-      const dragLimit = 180 * scale.value;
-      translateX.value = Math.min(
-        dragLimit,
-        Math.max(-dragLimit, savedTranslateX.value + event.translationX),
+      const horizontalLimit = Math.max(0, (viewerWidth.value * (scale.value - 1)) / 2);
+      const verticalLimit = Math.max(0, (viewerHeight.value * (scale.value - 1)) / 2);
+      translateX.value = clamp(
+        savedTranslateX.value + event.translationX,
+        -horizontalLimit,
+        horizontalLimit,
       );
-      translateY.value = Math.min(
-        dragLimit,
-        Math.max(-dragLimit, savedTranslateY.value + event.translationY),
+      translateY.value = clamp(
+        savedTranslateY.value + event.translationY,
+        -verticalLimit,
+        verticalLimit,
       );
     })
     .onEnd(() => {
@@ -1173,16 +1276,20 @@ function ImageViewerModal({
         return;
       }
 
-      if (scale.value > 1) {
-        scale.value = withTiming(1);
-        savedScale.value = 1;
+      if (scale.value > IMAGE_VIEWER_MIN_SCALE) {
+        scale.value = withTiming(IMAGE_VIEWER_MIN_SCALE);
+        savedScale.value = IMAGE_VIEWER_MIN_SCALE;
         translateX.value = withTiming(0);
         translateY.value = withTiming(0);
         savedTranslateX.value = 0;
         savedTranslateY.value = 0;
       } else {
-        scale.value = withTiming(2);
-        savedScale.value = 2;
+        scale.value = withTiming(IMAGE_VIEWER_DOUBLE_TAP_SCALE);
+        savedScale.value = IMAGE_VIEWER_DOUBLE_TAP_SCALE;
+        translateX.value = withTiming(0);
+        translateY.value = withTiming(0);
+        savedTranslateX.value = 0;
+        savedTranslateY.value = 0;
       }
     });
 
@@ -1198,16 +1305,16 @@ function ImageViewerModal({
   return (
     <Modal animationType="fade" onRequestClose={onClose} transparent visible={Boolean(imageUri)}>
       <View style={styles.imageViewerBackdrop}>
-        <Pressable
-          accessibilityLabel="Fechar imagem"
-          accessibilityRole="button"
-          onPress={onClose}
-          style={styles.imageViewerTapTarget}
-        />
-
         {imageUri ? (
           <GestureDetector gesture={imageGesture}>
-            <View collapsable={false} style={styles.imageViewerContent}>
+            <View
+              collapsable={false}
+              onLayout={(event) => {
+                viewerWidth.value = event.nativeEvent.layout.width;
+                viewerHeight.value = event.nativeEvent.layout.height;
+              }}
+              style={styles.imageViewerContent}
+            >
               <Animated.Image
                 resizeMode="contain"
                 source={{ uri: imageUri }}
@@ -1239,21 +1346,26 @@ function PalletCameraModal({
 }: {
   visible: boolean;
   onClose: () => void;
-  onCapture: (picture: CameraCapturedPicture) => void | Promise<void>;
+  onCapture: (picture: PickedImageAsset) => void | Promise<void>;
 }) {
   const insets = useSafeAreaInsets();
   const cameraRef = useRef<CameraView | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const [capturing, setCapturing] = useState(false);
-  const [cameraZoomPreset, setCameraZoomPreset] = useState<'2x' | '3x'>('2x');
-  const cameraZoomValue = cameraZoomPreset === '2x' ? 0.2 : 0.3;
-  const nextCameraZoomPreset = cameraZoomPreset === '2x' ? '3x' : '2x';
+  const [cameraZoomPreset, setCameraZoomPreset] = useState<CameraZoomPreset>(
+    DEFAULT_CAMERA_ZOOM_PRESET,
+  );
+  const cameraZoomConfig = CAMERA_ZOOM_CONFIGS[cameraZoomPreset];
+  const nextCameraZoomPreset =
+    CAMERA_ZOOM_SEQUENCE[
+      (CAMERA_ZOOM_SEQUENCE.indexOf(cameraZoomPreset) + 1) % CAMERA_ZOOM_SEQUENCE.length
+    ];
 
   useEffect(() => {
     if (visible) {
       setCameraReady(false);
       setCapturing(false);
-      setCameraZoomPreset('2x');
+      setCameraZoomPreset(DEFAULT_CAMERA_ZOOM_PRESET);
     }
   }, [visible]);
 
@@ -1265,7 +1377,10 @@ function PalletCameraModal({
 
   const toggleCameraZoom = () => {
     if (!capturing) {
-      setCameraZoomPreset((current) => (current === '2x' ? '3x' : '2x'));
+      setCameraZoomPreset((current) => {
+        const nextIndex = (CAMERA_ZOOM_SEQUENCE.indexOf(current) + 1) % CAMERA_ZOOM_SEQUENCE.length;
+        return CAMERA_ZOOM_SEQUENCE[nextIndex];
+      });
     }
   };
 
@@ -1284,15 +1399,11 @@ function PalletCameraModal({
 
     try {
       const picture = await camera.takePictureAsync({
-        base64: true,
         quality: 0.72,
       });
 
-      if (!picture.base64) {
-        throw new Error('A foto não retornou em base64.');
-      }
-
-      await onCapture(picture);
+      const zoomedPicture = await applyCameraCaptureZoom(picture, cameraZoomConfig.cropZoom);
+      await onCapture(zoomedPicture);
     } catch (error) {
       setCapturing(false);
       Alert.alert('Não foi possível fotografar', errorMessage(error));
@@ -1316,7 +1427,7 @@ function PalletCameraModal({
             }}
             ref={cameraRef}
             style={styles.cameraPreview}
-            zoom={cameraZoomValue}
+            zoom={cameraZoomConfig.previewZoom}
           />
         ) : null}
 
@@ -1339,7 +1450,7 @@ function PalletCameraModal({
           ]}
         >
           <Pressable
-            accessibilityLabel={`Zoom ${cameraZoomPreset}. Toque para mudar para ${nextCameraZoomPreset}.`}
+            accessibilityLabel={`Zoom ${cameraZoomConfig.label}. Toque para mudar para ${nextCameraZoomPreset}.`}
             accessibilityRole="button"
             disabled={capturing}
             onPress={toggleCameraZoom}
@@ -1348,7 +1459,7 @@ function PalletCameraModal({
               { opacity: pressed || capturing ? 0.72 : 1 },
             ]}
           >
-            <Text style={styles.cameraZoomText}>{cameraZoomPreset}</Text>
+            <Text style={styles.cameraZoomText}>{cameraZoomConfig.label}</Text>
           </Pressable>
           <IconButton disabled={capturing} icon={X} label="Fechar câmera" onPress={close} />
         </View>
@@ -1923,7 +2034,7 @@ export default function App() {
   };
 
   const handleCameraCaptured = useCallback(
-    async (picture: CameraCapturedPicture) => {
+    async (picture: PickedImageAsset) => {
       const context = cameraContext;
 
       if (!context) {
@@ -1932,10 +2043,7 @@ export default function App() {
 
       setCameraContext(null);
       try {
-        await openPalletNameAfterImage(context, {
-          base64: picture.base64,
-          uri: picture.uri,
-        });
+        await openPalletNameAfterImage(context, picture);
       } catch (error) {
         setBusyMessage(null);
         releasePickerFlow();
@@ -2452,14 +2560,6 @@ const styles = StyleSheet.create({
   imageViewerImage: {
     height: '100%',
     width: '100%',
-  },
-  imageViewerTapTarget: {
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
-    right: 0,
-    top: 0,
-    zIndex: 0,
   },
   input: {
     backgroundColor: colors.surface,
