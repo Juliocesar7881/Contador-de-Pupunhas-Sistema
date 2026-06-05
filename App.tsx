@@ -1293,7 +1293,8 @@ function ImageViewerModal({
       }
     });
 
-  const imageGesture = Gesture.Simultaneous(pinchGesture, panGesture, doubleTapGesture);
+  const imageTransformGesture = Gesture.Simultaneous(pinchGesture, panGesture);
+  const imageGesture = Gesture.Exclusive(doubleTapGesture, imageTransformGesture);
   const animatedImageStyle = useAnimatedStyle(() => ({
     transform: [
       { translateX: translateX.value },
@@ -1304,37 +1305,39 @@ function ImageViewerModal({
 
   return (
     <Modal animationType="fade" onRequestClose={onClose} transparent visible={Boolean(imageUri)}>
-      <View style={styles.imageViewerBackdrop}>
-        {imageUri ? (
-          <GestureDetector gesture={imageGesture}>
-            <View
-              collapsable={false}
-              onLayout={(event) => {
-                viewerWidth.value = event.nativeEvent.layout.width;
-                viewerHeight.value = event.nativeEvent.layout.height;
-              }}
-              style={styles.imageViewerContent}
-            >
-              <Animated.Image
-                resizeMode="contain"
-                source={{ uri: imageUri }}
-                style={[styles.imageViewerImage, animatedImageStyle]}
-              />
-            </View>
-          </GestureDetector>
-        ) : null}
+      <GestureHandlerRootView style={styles.imageViewerGestureRoot} unstable_forceActive>
+        <View style={styles.imageViewerBackdrop}>
+          {imageUri ? (
+            <GestureDetector gesture={imageGesture}>
+              <View
+                collapsable={false}
+                onLayout={(event) => {
+                  viewerWidth.value = event.nativeEvent.layout.width;
+                  viewerHeight.value = event.nativeEvent.layout.height;
+                }}
+                style={styles.imageViewerContent}
+              >
+                <Animated.Image
+                  resizeMode="contain"
+                  source={{ uri: imageUri }}
+                  style={[styles.imageViewerImage, animatedImageStyle]}
+                />
+              </View>
+            </GestureDetector>
+          ) : null}
 
-        <View
-          style={[
-            styles.imageViewerClose,
-            {
-              top: Math.max(insets.top, spacing.lg),
-            },
-          ]}
-        >
-          <IconButton icon={X} label="Fechar imagem" onPress={onClose} />
+          <View
+            style={[
+              styles.imageViewerClose,
+              {
+                top: Math.max(insets.top, spacing.lg),
+              },
+            ]}
+          >
+            <IconButton icon={X} label="Fechar imagem" onPress={onClose} />
+          </View>
         </View>
-      </View>
+      </GestureHandlerRootView>
     </Modal>
   );
 }
@@ -2549,6 +2552,9 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: spacing.lg,
     zIndex: 3,
+  },
+  imageViewerGestureRoot: {
+    flex: 1,
   },
   imageViewerContent: {
     flex: 1,
