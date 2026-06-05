@@ -7,16 +7,7 @@ import {
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
-import {
-  Gesture,
-  GestureDetector,
-  GestureHandlerRootView,
-} from 'react-native-gesture-handler';
-import Animated, {
-  useAnimatedStyle,
-  useSharedValue,
-  withTiming,
-} from 'react-native-reanimated';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import {
   initialWindowMetrics,
   SafeAreaProvider,
@@ -36,9 +27,11 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
   type GestureResponderEvent,
 } from 'react-native';
+import { ResumableZoom } from 'react-native-zoom-toolkit';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -127,10 +120,6 @@ const CAMERA_ZOOM_CONFIGS: Record<CameraZoomPreset, CameraZoomConfig> = {
 const DEFAULT_CAMERA_ZOOM_PRESET: CameraZoomPreset = '1.8x';
 const CAMERA_ZOOM_SEQUENCE: CameraZoomPreset[] = ['1.8x', '2.5x'];
 
-const IMAGE_VIEWER_MIN_SCALE = 1;
-const IMAGE_VIEWER_MAX_SCALE = 5;
-const IMAGE_VIEWER_DOUBLE_TAP_SCALE = 2.5;
-
 type LoadModalState =
   | { mode: 'closed' }
   | { mode: 'create' }
@@ -218,11 +207,6 @@ function delay(ms: number) {
   return new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
   });
-}
-
-function clamp(value: number, minimum: number, maximum: number) {
-  'worklet';
-  return Math.min(maximum, Math.max(minimum, value));
 }
 
 async function applyCameraCaptureZoom(
@@ -1185,145 +1169,43 @@ function ImageViewerModal({
   onClose: () => void;
 }) {
   const insets = useSafeAreaInsets();
-  const scale = useSharedValue(1);
-  const savedScale = useSharedValue(1);
-  const translateX = useSharedValue(0);
-  const translateY = useSharedValue(0);
-  const savedTranslateX = useSharedValue(0);
-  const savedTranslateY = useSharedValue(0);
-  const viewerWidth = useSharedValue(1);
-  const viewerHeight = useSharedValue(1);
-
-  useEffect(() => {
-    scale.value = withTiming(IMAGE_VIEWER_MIN_SCALE);
-    savedScale.value = IMAGE_VIEWER_MIN_SCALE;
-    translateX.value = withTiming(0);
-    translateY.value = withTiming(0);
-    savedTranslateX.value = 0;
-    savedTranslateY.value = 0;
-  }, [imageUri, savedScale, savedTranslateX, savedTranslateY, scale, translateX, translateY]);
-
-  const pinchGesture = Gesture.Pinch()
-    .onStart(() => {
-      savedScale.value = scale.value;
-    })
-    .onUpdate((event) => {
-      const nextScale = clamp(
-        savedScale.value * event.scale,
-        IMAGE_VIEWER_MIN_SCALE,
-        IMAGE_VIEWER_MAX_SCALE,
-      );
-      scale.value = nextScale;
-
-      const horizontalLimit = Math.max(0, (viewerWidth.value * (nextScale - 1)) / 2);
-      const verticalLimit = Math.max(0, (viewerHeight.value * (nextScale - 1)) / 2);
-      translateX.value = clamp(translateX.value, -horizontalLimit, horizontalLimit);
-      translateY.value = clamp(translateY.value, -verticalLimit, verticalLimit);
-    })
-    .onEnd(() => {
-      if (scale.value <= 1.01) {
-        scale.value = withTiming(IMAGE_VIEWER_MIN_SCALE);
-        translateX.value = withTiming(0);
-        translateY.value = withTiming(0);
-        savedTranslateX.value = 0;
-        savedTranslateY.value = 0;
-        savedScale.value = IMAGE_VIEWER_MIN_SCALE;
-        return;
-      }
-
-      savedScale.value = scale.value;
-      const horizontalLimit = Math.max(0, (viewerWidth.value * (scale.value - 1)) / 2);
-      const verticalLimit = Math.max(0, (viewerHeight.value * (scale.value - 1)) / 2);
-      translateX.value = withTiming(clamp(translateX.value, -horizontalLimit, horizontalLimit));
-      translateY.value = withTiming(clamp(translateY.value, -verticalLimit, verticalLimit));
-    });
-
-  const panGesture = Gesture.Pan()
-    .minDistance(2)
-    .onStart(() => {
-      savedTranslateX.value = translateX.value;
-      savedTranslateY.value = translateY.value;
-    })
-    .onUpdate((event) => {
-      if (scale.value <= IMAGE_VIEWER_MIN_SCALE) {
-        translateX.value = 0;
-        translateY.value = 0;
-        return;
-      }
-
-      const horizontalLimit = Math.max(0, (viewerWidth.value * (scale.value - 1)) / 2);
-      const verticalLimit = Math.max(0, (viewerHeight.value * (scale.value - 1)) / 2);
-      translateX.value = clamp(
-        savedTranslateX.value + event.translationX,
-        -horizontalLimit,
-        horizontalLimit,
-      );
-      translateY.value = clamp(
-        savedTranslateY.value + event.translationY,
-        -verticalLimit,
-        verticalLimit,
-      );
-    })
-    .onEnd(() => {
-      savedTranslateX.value = translateX.value;
-      savedTranslateY.value = translateY.value;
-    });
-
-  const doubleTapGesture = Gesture.Tap()
-    .numberOfTaps(2)
-    .onEnd((_event, success) => {
-      if (!success) {
-        return;
-      }
-
-      if (scale.value > IMAGE_VIEWER_MIN_SCALE) {
-        scale.value = withTiming(IMAGE_VIEWER_MIN_SCALE);
-        savedScale.value = IMAGE_VIEWER_MIN_SCALE;
-        translateX.value = withTiming(0);
-        translateY.value = withTiming(0);
-        savedTranslateX.value = 0;
-        savedTranslateY.value = 0;
-      } else {
-        scale.value = withTiming(IMAGE_VIEWER_DOUBLE_TAP_SCALE);
-        savedScale.value = IMAGE_VIEWER_DOUBLE_TAP_SCALE;
-        translateX.value = withTiming(0);
-        translateY.value = withTiming(0);
-        savedTranslateX.value = 0;
-        savedTranslateY.value = 0;
-      }
-    });
-
-  const imageTransformGesture = Gesture.Simultaneous(pinchGesture, panGesture);
-  const imageGesture = Gesture.Exclusive(doubleTapGesture, imageTransformGesture);
-  const animatedImageStyle = useAnimatedStyle(() => ({
-    transform: [
-      { translateX: translateX.value },
-      { translateY: translateY.value },
-      { scale: scale.value },
-    ],
-  }));
+  const { height, width } = useWindowDimensions();
+  const imageFrameWidth = Math.max(1, width - spacing.sm * 2);
+  const imageFrameHeight = Math.max(
+    1,
+    height - Math.max(insets.top, spacing.lg) - Math.max(insets.bottom, spacing.lg) - 96,
+  );
 
   return (
     <Modal animationType="fade" onRequestClose={onClose} transparent visible={Boolean(imageUri)}>
       <GestureHandlerRootView style={styles.imageViewerGestureRoot} unstable_forceActive>
         <View style={styles.imageViewerBackdrop}>
           {imageUri ? (
-            <GestureDetector gesture={imageGesture}>
-              <View
-                collapsable={false}
-                onLayout={(event) => {
-                  viewerWidth.value = event.nativeEvent.layout.width;
-                  viewerHeight.value = event.nativeEvent.layout.height;
-                }}
-                style={styles.imageViewerContent}
-              >
-                <Animated.Image
-                  resizeMode="contain"
-                  source={{ uri: imageUri }}
-                  style={[styles.imageViewerImage, animatedImageStyle]}
-                />
-              </View>
-            </GestureDetector>
+            <ResumableZoom
+              allowPinchPanning
+              extendGestures
+              maxScale={5}
+              minScale={1}
+              panEnabled
+              panMode="clamp"
+              pinchEnabled
+              pinchMode="clamp"
+              scaleMode="clamp"
+              style={styles.imageViewerContent}
+              tapsEnabled
+            >
+              <RNImage
+                resizeMode="contain"
+                source={{ uri: imageUri }}
+                style={[
+                  styles.imageViewerImage,
+                  {
+                    height: imageFrameHeight,
+                    width: imageFrameWidth,
+                  },
+                ]}
+              />
+            </ResumableZoom>
           ) : null}
 
           <View
@@ -2558,9 +2440,6 @@ const styles = StyleSheet.create({
   },
   imageViewerContent: {
     flex: 1,
-    justifyContent: 'center',
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 72,
     zIndex: 1,
   },
   imageViewerImage: {
