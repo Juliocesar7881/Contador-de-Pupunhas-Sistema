@@ -284,16 +284,19 @@ function errorMessage(error: unknown) {
   return message;
 }
 
-async function launchPalletImageLibrary() {
+async function launchPalletImageLibrary(selectionLimit: number) {
   const maxAttempts = Platform.OS === 'android' ? 2 : 1;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       return await ImagePicker.launchImageLibraryAsync({
         allowsEditing: false,
+        allowsMultipleSelection: true,
         base64: true,
         mediaTypes: ['images'],
+        orderedSelection: true,
         quality: 0.72,
+        selectionLimit,
       });
     } catch (error) {
       if (!isGalleryLaunchError(error) || attempt === maxAttempts) {
@@ -1719,6 +1722,85 @@ export default function App() {
     [navigateTo, refreshCurrentScreen, refreshLoad, releasePickerFlow],
   );
 
+  const processGalleryAssets = useCallback(
+    async (context: PendingPickerContext, assets: PickedImageAsset[]) => {
+      let errorCount = 0;
+      let skippedCount = 0;
+
+      try {
+        const existingPallets = await listPallets(context.loadId);
+        const availableSlots = Math.max(0, MAX_PALLETS_PER_LOAD - existingPallets.length);
+
+        if (availableSlots <= 0) {
+          throw new Error(`Cada carga aceita no máximo ${MAX_PALLETS_PER_LOAD} paletes.`);
+        }
+
+        const selectedAssets = assets.filter((asset) => asset.base64);
+        skippedCount += assets.length - selectedAssets.length;
+
+        if (!selectedAssets.length) {
+          throw new Error('Nenhuma imagem válida foi selecionada.');
+        }
+
+        const assetsToProcess = selectedAssets.slice(0, availableSlots);
+        skippedCount += selectedAssets.length - assetsToProcess.length;
+
+        await clearPendingPickerContext();
+
+        for (let index = 0; index < assetsToProcess.length; index += 1) {
+          const asset = assetsToProcess[index];
+          let palletId: number | null = null;
+
+          try {
+            if (!asset.base64) {
+              throw new Error('A foto não retornou em base64.');
+            }
+
+            setBusyMessage(`Salvando palete ${index + 1}/${assetsToProcess.length}`);
+            palletId = await createProcessingPallet(context.loadId, asset.base64);
+            await refreshLoad(context.loadId);
+
+            setBusyMessage(`Contando com IA ${index + 1}/${assetsToProcess.length}`);
+            const analysis = await analyzePalletImage(asset.base64);
+            await savePalletAnalysis(palletId, context.loadId, analysis);
+            await refreshLoad(context.loadId);
+          } catch (error) {
+            errorCount += 1;
+
+            if (palletId) {
+              await markPalletError(palletId, context.loadId, errorMessage(error));
+              await refreshLoad(context.loadId);
+            }
+          }
+        }
+
+        replaceScreen({ name: 'load', loadId: context.loadId });
+
+        if (skippedCount > 0 || errorCount > 0) {
+          const details = [
+            skippedCount > 0
+              ? `${skippedCount} imagem(ns) não foram processadas por limite ou falta de dados.`
+              : null,
+            errorCount > 0
+              ? `${errorCount} palete(s) ficaram com erro e podem ser reprocessados.`
+              : null,
+          ].filter(Boolean);
+
+          Alert.alert('Galeria processada', details.join('\n'));
+        }
+      } catch (error) {
+        Alert.alert('Não foi possível adicionar', errorMessage(error));
+      } finally {
+        await clearPendingPickerContext().catch(() => undefined);
+        setBusyMessage(null);
+        releasePickerFlow();
+        await refreshLoad(context.loadId).catch(() => undefined);
+        await refreshCurrentScreen().catch(() => undefined);
+      }
+    },
+    [refreshCurrentScreen, refreshLoad, releasePickerFlow, replaceScreen],
+  );
+
   const requestPalletImage = (source: ImageSource) => {
     if (screen.name !== 'load') {
       return;
@@ -1781,10 +1863,17 @@ export default function App() {
 
   const pickImageSafely = useCallback(
     async (context: PendingPickerContext) => {
-      let handedOffToNaming = false;
+      let handedOffToProcessing = false;
 
       try {
         setBusyMessage('Abrindo galeria');
+
+        const loadPallets = await listPallets(context.loadId);
+        const availableSlots = MAX_PALLETS_PER_LOAD - loadPallets.length;
+
+        if (availableSlots <= 0) {
+          throw new Error(`Cada carga aceita no máximo ${MAX_PALLETS_PER_LOAD} paletes.`);
+        }
 
         if (Platform.OS === 'android') {
           await savePendingPickerContext(context);
@@ -1792,20 +1881,19 @@ export default function App() {
           await clearPendingPickerContext();
         }
 
-        const result = await launchPalletImageLibrary();
+        const result = await launchPalletImageLibrary(availableSlots);
 
         if (result.canceled) {
           await clearPendingPickerContext();
           return;
         }
 
-        const asset = result.assets[0];
-        if (!asset) {
+        if (!result.assets.length) {
           throw new Error('Nenhuma imagem foi selecionada.');
         }
 
-        await openPalletNameAfterImage(context, asset);
-        handedOffToNaming = true;
+        await processGalleryAssets(context, result.assets);
+        handedOffToProcessing = true;
       } catch (error) {
         await clearPendingPickerContext().catch(() => undefined);
         if (isGalleryLaunchError(error)) {
@@ -1814,14 +1902,14 @@ export default function App() {
           Alert.alert('Não foi possível adicionar', errorMessage(error));
         }
       } finally {
-        if (!handedOffToNaming) {
+        if (!handedOffToProcessing) {
           setBusyMessage(null);
           releasePickerFlow();
           await refreshCurrentScreen().catch(() => undefined);
         }
       }
     },
-    [openPalletNameAfterImage, refreshCurrentScreen, releasePickerFlow],
+    [processGalleryAssets, refreshCurrentScreen, releasePickerFlow],
   );
 
   const recoverPendingPickerResult = useCallback(async () => {
@@ -1857,8 +1945,7 @@ export default function App() {
       return;
     }
 
-    const asset = result.assets[0];
-    if (!asset) {
+    if (!result.assets.length) {
       await clearPendingPickerContext();
       Alert.alert('Não foi possível adicionar', 'Nenhuma imagem foi selecionada.');
       return;
@@ -1866,13 +1953,13 @@ export default function App() {
 
     pickerFlowLockedRef.current = true;
     try {
-      await openPalletNameAfterImage(context, asset);
+      await processGalleryAssets(context, result.assets);
     } catch (error) {
       await clearPendingPickerContext().catch(() => undefined);
       releasePickerFlow();
       Alert.alert('Não foi possível adicionar', errorMessage(error));
     }
-  }, [openPalletNameAfterImage, releasePickerFlow]);
+  }, [processGalleryAssets, releasePickerFlow]);
 
   useEffect(() => {
     if (!ready) {

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Contador Pupunha",
     "slug": "contador-pupunha",
-    "version": "1.0.11",
+    "version": "1.0.12",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -11,7 +11,7 @@
     },
     "android": {
       "package": "com.luchini.contadorpupunha",
-      "versionCode": 15,
+      "versionCode": 16,
       "adaptiveIcon": {
         "backgroundColor": "#F5FAF7",
         "foregroundImage": "./assets/android-icon-foreground.png"
